@@ -39,7 +39,7 @@ def run():
         sys.exit(1)
 
     # Korak 1: obriši SVE podatke iz taba (clear, ne delete — čuva strukturu taba)
-    clear_range = f"'{SHEET_NAME}'!A:Z"
+    clear_range = f"'{SHEET_NAME}'!A1:ZZ10000"
     svc.spreadsheets().values().clear(spreadsheetId=sid, range=clear_range, body={}).execute()
     log.info("Obrisani svi podaci iz '%s'", SHEET_NAME)
 
