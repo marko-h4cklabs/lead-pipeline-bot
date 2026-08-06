@@ -33,6 +33,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Provjeri commit
+        run: |
+          echo "Commit SHA: $(git rev-parse HEAD)"
+          echo "Datum commita: $(git log -1 --format='%ci')"
+          echo "Poruka commita: $(git log -1 --format='%s')"
+
       - name: Run collect
         env:
           GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}

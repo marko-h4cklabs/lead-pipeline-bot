@@ -113,6 +113,16 @@ def run():
 
     # --- Upis u Sheet (batch — jedan API poziv za sve redove) ---
     log.info("Upisujem %d novih leadova u Sheet...", len(new_leads))
+
+    # DEBUG: provjeri sadržaj prvog reda PRIJE batch_append
+    from scripts.lib.sheets import COLUMNS as _COLS
+    _first = new_leads[0]
+    _row0 = [_first.get(col, "__MISSING__") for col in _COLS]
+    log.info("DEBUG values[0] keys u leadu: %s", list(_first.keys()))
+    log.info("DEBUG values[0] (%d elemenata): %s", len(_row0), _row0)
+    log.info("DEBUG lead_id na poziciji 0: %r", _row0[0])
+    log.info("DEBUG link na poziciji 16: %r", _row0[16])
+
     try:
         client.batch_append(new_leads)
     except Exception as e:
