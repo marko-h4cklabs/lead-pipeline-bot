@@ -117,7 +117,12 @@ def search_places(
     places = data.get("places", [])
     if not places:
         log.info("Places API prazan odgovor za '%s': %s", query, str(data)[:300])
+    elif query == NISE_QUERIES[0]:
+        # Log prvog rezultata prve query za debug
+        log.info("Places sample[0] za '%s': %s", query, str(places[0])[:400])
     results = []
+    skipped_no_contact = 0
+    skipped_not_hr = 0
     for p in places:
         name = p.get("displayName", {}).get("text", "")
         phone = p.get("nationalPhoneNumber", "") or p.get("internationalPhoneNumber", "")
@@ -126,11 +131,11 @@ def search_places(
         components = p.get("addressComponents", [])
         grad, zupanija = _parse_address_components(components)
 
-        # Preskoči ako firma nema ni telefon ni web — nema smisla je procesirati
         if not phone and not web:
+            skipped_no_contact += 1
             continue
-        # Preskoči firme izvan HR (u slučaju da Places vrati neke)
         if "Hrvatska" not in address and "Croatia" not in address:
+            skipped_not_hr += 1
             continue
 
         results.append({
@@ -141,6 +146,9 @@ def search_places(
             "zupanija": zupanija,
             "izvor": "Google Places",
         })
+    if skipped_no_contact or skipped_not_hr:
+        log.info("Places '%s': filtrirano %d (bez kontakta), %d (nije HR)",
+                 query, skipped_no_contact, skipped_not_hr)
     log.info("Places: '%s' → %d rezultata", query, len(results))
     return results
 
