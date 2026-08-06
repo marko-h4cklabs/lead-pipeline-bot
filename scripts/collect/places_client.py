@@ -29,7 +29,7 @@ HR_ZUPANIJI = [
 NISE_QUERIES = [
     "građevinska firma", "adaptacija stanova", "keramičar", "soboslikar",
     "vodoinstalater", "električar", "klimatizacija i ventilacija",
-    "krovopokrivač", "fasader", "stolar", "bravار", "autolakirer",
+    "krovopokrivač", "fasader", "stolar", "bravar", "autolakirer",
     "servis kotlova", "dimnjačar", "odvoz smeća firma",
     "usluge čišćenja firme", "krajobrazno uređenje", "hortikultura",
     "zaštitarska tvrtka", "selitbene usluge",
@@ -102,13 +102,21 @@ def search_places(
 
     try:
         resp = requests.post(PLACES_API_URL, json=body, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            log.error("Places API HTTP %d za '%s': %s", resp.status_code, query, resp.text[:500])
+            return []
         resp.raise_for_status()
     except requests.RequestException as e:
         log.error("Places API greška za query '%s': %s", query, e)
         return []
 
     data = resp.json()
+    if "error" in data:
+        log.error("Places API error za '%s': %s", query, data["error"])
+        return []
     places = data.get("places", [])
+    if not places:
+        log.info("Places API prazan odgovor za '%s': %s", query, str(data)[:300])
     results = []
     for p in places:
         name = p.get("displayName", {}).get("text", "")

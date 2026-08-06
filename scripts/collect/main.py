@@ -107,13 +107,12 @@ def run():
         log.info("Nema novih leadova — završeno.")
         return
 
-    # --- Upis u Sheet ---
+    # --- Upis u Sheet (batch — jedan API poziv za sve redove) ---
     log.info("Upisujem %d novih leadova u Sheet...", len(new_leads))
-    for lead in new_leads:
-        try:
-            client.append_row(lead)
-        except Exception as e:
-            log.error("Greška upisa %s: %s", lead.get("lead_id"), e)
+    try:
+        client.batch_append(new_leads)
+    except Exception as e:
+        log.error("Greška batch upisa: %s", e)
 
     log.info("=== Collect završen: %d novih redova ===", len(new_leads))
 

@@ -118,6 +118,21 @@ class SheetsClient:
         ).execute()
         log.debug("Appended row lead_id=%s", data.get("lead_id"))
 
+    def batch_append(self, rows: list[dict]) -> None:
+        """Dodaje više redova u jednom API pozivu (izbjegava 429 rate limit)."""
+        if not rows:
+            return
+        values = [[data.get(col, "") for col in COLUMNS] for data in rows]
+        body = {"values": values}
+        self._svc.spreadsheets().values().append(
+            spreadsheetId=self._sid,
+            range=self._sheet_ref,
+            valueInputOption="USER_ENTERED",
+            insertDataOption="INSERT_ROWS",
+            body=body,
+        ).execute()
+        log.info("batch_append: dodano %d redova", len(rows))
+
     def update_row(self, lead_id: str, updates: dict) -> bool:
         """
         Ažurira samo navedene stupce za red s lead_id.
