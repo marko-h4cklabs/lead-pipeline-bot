@@ -38,7 +38,20 @@ def run():
     log.info("=== Verify start ===")
     client = SheetsClient()
 
-    new_rows = client.read_by_status("new")
+    all_rows = client.read_all()
+    log.info("Ukupno redova u Sheetu: %d", len(all_rows))
+    if all_rows:
+        statuses = {}
+        for r in all_rows:
+            s = r.get("status", "(prazno)")
+            statuses[s] = statuses.get(s, 0) + 1
+        log.info("Distribucija statusa: %s", statuses)
+        sample = all_rows[0]
+        log.info("Primjer [row %d]: lead_id=%r naziv=%r status=%r web=%r",
+                 sample.get("_row"), sample.get("lead_id"), sample.get("naziv_firme"),
+                 sample.get("status"), sample.get("web", "")[:60])
+
+    new_rows = [r for r in all_rows if r.get("status") == "new"]
     log.info("Pronađeno %d 'new' redova za verifikaciju", len(new_rows))
 
     if not new_rows:
