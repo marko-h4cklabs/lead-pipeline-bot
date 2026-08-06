@@ -127,22 +127,25 @@ class SheetsClient:
         next_row = len(existing) + 1  # 1-based; pišemo iza zadnjeg reda s podacima
 
         values = [[data.get(col, "") for col in COLUMNS] for data in rows]
-        last_row = next_row + len(rows) - 1
-        write_range = f"'{SHEET_NAME}'!A{next_row}:Q{last_row}"
+        # Samo start cell — API sam izračuna kraj iz dimenzija matrice.
+        # Eksplicitni end column (npr. :Q) uzrokuje pomak desno jer API
+        # tretira end column kao sidro umjesto granice.
+        write_range = f"'{SHEET_NAME}'!A{next_row}"
         log.info(
-            "batch_append: pišem %d redova na %s (prva vrijednost: %s)",
-            len(rows),
-            write_range,
-            values[0][:4] if values else [],
+            "batch_append: pišem %d redova od %s | width=%d | first_row=%s",
+            len(rows), write_range, len(values[0]) if values else 0, values[0] if values else [],
         )
         body = {"values": values}
-        self._svc.spreadsheets().values().update(
+        resp = self._svc.spreadsheets().values().update(
             spreadsheetId=self._sid,
             range=write_range,
             valueInputOption="USER_ENTERED",
             body=body,
         ).execute()
-        log.info("batch_append: OK — %d redova od reda %d", len(rows), next_row)
+        log.info(
+            "batch_append: API updatedRange=%s updatedRows=%s updatedColumns=%s",
+            resp.get("updatedRange"), resp.get("updatedRows"), resp.get("updatedColumns"),
+        )
 
     def update_row(self, lead_id: str, updates: dict) -> bool:
         """
