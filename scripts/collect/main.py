@@ -46,11 +46,17 @@ def run():
     new_leads = []
     seen_cw_urls: set[str] = set()
 
+    # Svaki izvor dobiva vlastitu kvotu — Places pola, CW pola.
+    # (ostatak pri neparnom broju ide CW-u)
+    places_limit = MAX_NEW_PER_RUN // 2
+    cw_limit = MAX_NEW_PER_RUN - places_limit
+    log.info("Kvote: Places=%d, CompanyWall=%d", places_limit, cw_limit)
+
     # --- Izvor 1: Google Places ---
     log.info("Google Places: pokretanje...")
     places_count = 0
     for lead in iter_all_searches():
-        if len(new_leads) >= MAX_NEW_PER_RUN:
+        if places_count >= places_limit:
             break
         is_dup, reason = checker.is_duplicate(lead)
         if is_dup:
@@ -72,10 +78,10 @@ def run():
     log.info("CompanyWall: pokretanje...")
     cw_count = 0
     for query in NISE_QUERIES:
-        if len(new_leads) >= MAX_NEW_PER_RUN:
+        if cw_count >= cw_limit:
             break
         for item in search_companywall(query, max_pages=2):
-            if len(new_leads) >= MAX_NEW_PER_RUN:
+            if cw_count >= cw_limit:
                 break
             cw_url = item.get("cw_url", "")
             if cw_url in seen_cw_urls:
