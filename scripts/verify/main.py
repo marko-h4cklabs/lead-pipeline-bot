@@ -38,22 +38,6 @@ def run():
     log.info("=== Verify start ===")
     client = SheetsClient()
 
-    # --- Dijagnostika: sirov read Sheet ---
-    from scripts.lib.sheets import _get_service, _sheet_id, SHEET_NAME
-    svc = _get_service()
-    sid = _sheet_id()
-    raw = svc.spreadsheets().values().get(
-        spreadsheetId=sid, range=f"'{SHEET_NAME}'!A1:Q5"
-    ).execute()
-    raw_rows = raw.get("values", [])
-    log.info("Sirov Sheet A1:Q5 (%d redova): %s", len(raw_rows), raw_rows)
-    # Provjeri koliko ukupno redova ima
-    meta = svc.spreadsheets().get(spreadsheetId=sid).execute()
-    for s in meta.get("sheets", []):
-        if s["properties"]["title"] == SHEET_NAME:
-            log.info("Sheet '%s' rowCount=%d", SHEET_NAME, s["properties"]["gridProperties"]["rowCount"])
-    # ---
-
     all_rows = client.read_all()
     log.info("Ukupno redova u Sheetu: %d", len(all_rows))
     if all_rows:

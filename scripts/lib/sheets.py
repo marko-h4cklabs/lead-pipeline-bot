@@ -106,32 +106,43 @@ class SheetsClient:
         return None
 
     def append_row(self, data: dict) -> None:
-        """Dodaje novi red na kraj Sheeta."""
-        row = [data.get(col, "") for col in COLUMNS]
-        body = {"values": [row]}
-        self._svc.spreadsheets().values().append(
-            spreadsheetId=self._sid,
-            range=self._sheet_ref,
-            valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
-            body=body,
-        ).execute()
-        log.debug("Appended row lead_id=%s", data.get("lead_id"))
+        """Dodaje jedan red na kraj Sheeta (koristi batch_append za višestruke redove)."""
+        self.batch_append([data])
 
     def batch_append(self, rows: list[dict]) -> None:
-        """Dodaje više redova u jednom API pozivu (izbjegava 429 rate limit)."""
+        """
+        Dodaje više redova u jednom API pozivu — koristi update() s eksplicitnim
+        row brojevima da izbjegne INSERT_ROWS table-detection ambiguity.
+        """
         if not rows:
             return
+        # Nađi zadnji red s podacima (ne koristimo append/INSERT_ROWS jer je nepredvidiv)
+        result = (
+            self._svc.spreadsheets()
+            .values()
+            .get(spreadsheetId=self._sid, range=self._sheet_ref)
+            .execute()
+        )
+        existing = result.get("values", [])
+        next_row = len(existing) + 1  # 1-based; pišemo iza zadnjeg reda s podacima
+
         values = [[data.get(col, "") for col in COLUMNS] for data in rows]
+        last_row = next_row + len(rows) - 1
+        write_range = f"'{SHEET_NAME}'!A{next_row}:Q{last_row}"
+        log.info(
+            "batch_append: pišem %d redova na %s (prva vrijednost: %s)",
+            len(rows),
+            write_range,
+            values[0][:4] if values else [],
+        )
         body = {"values": values}
-        self._svc.spreadsheets().values().append(
+        self._svc.spreadsheets().values().update(
             spreadsheetId=self._sid,
-            range=self._sheet_ref,
+            range=write_range,
             valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
             body=body,
         ).execute()
-        log.info("batch_append: dodano %d redova", len(rows))
+        log.info("batch_append: OK — %d redova od reda %d", len(rows), next_row)
 
     def update_row(self, lead_id: str, updates: dict) -> bool:
         """

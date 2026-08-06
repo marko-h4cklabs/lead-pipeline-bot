@@ -1,21 +1,16 @@
-name: Collect Leads
+name: Reset Sheet (header + čišćenje)
 
 on:
   workflow_dispatch:
-    inputs:
-      max_new:
-        description: "Max novih leadova po runu (default: 80)"
-        required: false
-        default: "80"
 
 permissions:
   contents: read
-  id-token: write   # potrebno za Workload Identity Federation OIDC token
+  id-token: write
 
 jobs:
-  collect:
+  reset:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v4
@@ -33,10 +28,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run collect
+      - name: Reset Sheet
         env:
           GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
-          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          GITHUB_PAGES_BASE: ${{ vars.GITHUB_PAGES_BASE }}
-          MAX_NEW_PER_RUN: ${{ inputs.max_new }}
-        run: python -m scripts.collect.main
+        run: python -m scripts.reset_sheet
