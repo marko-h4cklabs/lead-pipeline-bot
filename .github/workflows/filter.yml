@@ -1,0 +1,45 @@
+name: Filter Leads
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_employees:
+        description: "Min broj zaposlenih (default: 5)"
+        required: false
+        default: "5"
+      min_years:
+        description: "Min godina poslovanja (default: 2)"
+        required: false
+        default: "2"
+
+permissions:
+  contents: read
+  id-token: write   # potrebno za Workload Identity Federation OIDC token
+
+jobs:
+  filter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/401516118047/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider"
+          service_account: "lead-pipeline-bot@lead-scraper-august.iam.gserviceaccount.com"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run filter
+        env:
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+          MIN_EMPLOYEES: ${{ inputs.min_employees }}
+          MIN_YEARS: ${{ inputs.min_years }}
+        run: python -m scripts.filter.main

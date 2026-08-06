@@ -1,0 +1,42 @@
+name: Collect Leads
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_new:
+        description: "Max novih leadova po runu (default: 80)"
+        required: false
+        default: "80"
+
+permissions:
+  contents: read
+  id-token: write   # potrebno za Workload Identity Federation OIDC token
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/401516118047/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider"
+          service_account: "lead-pipeline-bot@lead-scraper-august.iam.gserviceaccount.com"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run collect
+        env:
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          GITHUB_PAGES_BASE: ${{ secrets.GITHUB_PAGES_BASE }}
+          MAX_NEW_PER_RUN: ${{ inputs.max_new }}
+        run: python -m scripts.collect.main

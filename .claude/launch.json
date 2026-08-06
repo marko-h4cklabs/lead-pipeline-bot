@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Voice Stitcher webapp",
+      "runtimeExecutable": "/Users/markosrnec5/.pyenv/versions/3.11.9/bin/python3",
+      "runtimeArgs": ["/Users/markosrnec5/Downloads/lead-scraper-august/.claude/serve.py"],
+      "port": 8080,
+      "autoPort": true
+    }
+  ]
+}

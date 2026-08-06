@@ -1,0 +1,157 @@
+"""
+Google Places API (New) klijent — textSearch za B2B niše u HR.
+
+Koristi Places API (New): POST /v1/places:searchText
+API key: env GOOGLE_PLACES_API_KEY
+"""
+import logging
+import os
+import time
+from typing import Iterator
+
+import requests
+
+log = logging.getLogger(__name__)
+
+PLACES_API_URL = "https://places.googleapis.com/v1/places:searchText"
+
+# Sve županije HR osim Međimurske (20) i Varaždinske (05)
+# Koristimo ih kao search bias regione — Places API nema direktni county filter
+# pa dodajemo naziv županije u query kao fallback
+HR_ZUPANIJI = [
+    "Zagreb", "Karlovac", "Sisak", "Bjelovar", "Koprivnica",
+    "Virovitica", "Požega", "Slavonski Brod", "Osijek", "Vukovar",
+    "Zadar", "Šibenik", "Split", "Dubrovnik", "Rijeka",
+    "Pula", "Gospić", "Krapina",
+]
+
+# Quote-based niše — servisne firme bez cjenika online
+NISE_QUERIES = [
+    "građevinska firma", "adaptacija stanova", "keramičar", "soboslikar",
+    "vodoinstalater", "električar", "klimatizacija i ventilacija",
+    "krovopokrivač", "fasader", "stolar", "bravار", "autolakirer",
+    "servis kotlova", "dimnjačar", "odvoz smeća firma",
+    "usluge čišćenja firme", "krajobrazno uređenje", "hortikultura",
+    "zaštitarska tvrtka", "selitbene usluge",
+]
+
+FIELD_MASK = ",".join([
+    "places.id",
+    "places.displayName",
+    "places.formattedAddress",
+    "places.nationalPhoneNumber",
+    "places.internationalPhoneNumber",
+    "places.websiteUri",
+    "places.businessStatus",
+    "places.types",
+    "places.addressComponents",
+])
+
+
+def _api_key() -> str:
+    key = os.environ.get("GOOGLE_PLACES_API_KEY", "")
+    if not key:
+        raise ValueError("GOOGLE_PLACES_API_KEY nije postavljen")
+    return key
+
+
+def _parse_address_components(components: list[dict]) -> tuple[str, str]:
+    """Izvlači grad i županiju iz addressComponents."""
+    grad = ""
+    zupanija = ""
+    for comp in components:
+        types = comp.get("types", [])
+        long_name = comp.get("longText", "")
+        if "locality" in types or "postal_town" in types:
+            grad = long_name
+        if "administrative_area_level_1" in types:
+            zupanija = long_name
+    return grad, zupanija
+
+
+def search_places(
+    query: str,
+    location_bias_circle_center: tuple[float, float] | None = None,
+    location_bias_radius_m: int = 50000,
+    max_results: int = 20,
+) -> list[dict]:
+    """
+    Jedno textSearch za danu nišu/query.
+    Vraća listu dikt-ova u formatu kompatibilnom s lead shemom.
+    """
+    api_key = _api_key()
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": FIELD_MASK,
+    }
+    body = {
+        "textQuery": query,
+        "languageCode": "hr",
+        "regionCode": "HR",
+        "maxResultCount": min(max_results, 20),
+    }
+    if location_bias_circle_center:
+        lat, lng = location_bias_circle_center
+        body["locationBias"] = {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lng},
+                "radius": location_bias_radius_m,
+            }
+        }
+
+    try:
+        resp = requests.post(PLACES_API_URL, json=body, headers=headers, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        log.error("Places API greška za query '%s': %s", query, e)
+        return []
+
+    data = resp.json()
+    places = data.get("places", [])
+    results = []
+    for p in places:
+        name = p.get("displayName", {}).get("text", "")
+        phone = p.get("nationalPhoneNumber", "") or p.get("internationalPhoneNumber", "")
+        web = p.get("websiteUri", "")
+        address = p.get("formattedAddress", "")
+        components = p.get("addressComponents", [])
+        grad, zupanija = _parse_address_components(components)
+
+        # Preskoči ako firma nema ni telefon ni web — nema smisla je procesirati
+        if not phone and not web:
+            continue
+        # Preskoči firme izvan HR (u slučaju da Places vrati neke)
+        if "Hrvatska" not in address and "Croatia" not in address:
+            continue
+
+        results.append({
+            "naziv_firme": name,
+            "telefon": phone,
+            "web": web,
+            "grad": grad,
+            "zupanija": zupanija,
+            "izvor": "Google Places",
+        })
+    log.info("Places: '%s' → %d rezultata", query, len(results))
+    return results
+
+
+def iter_all_searches(delay_between_queries: float = 2.0) -> Iterator[dict]:
+    """
+    Prolazi kroz sve kombinacije niša, vraća lead dict-ove jedan po jedan.
+    Namjerno ne prolazi po svim županijama — Places API već filtrira po regionCode=HR
+    i vraća rezultate iz cijele države. Ako treba finiji targeting, dodaj location bias.
+    """
+    seen_place_ids: set[str] = set()
+    for query in NISE_QUERIES:
+        results = search_places(query)
+        for r in results:
+            # interni Places ID za intra-batch dedupe
+            pid = r.get("_place_id", "")
+            if pid and pid in seen_place_ids:
+                continue
+            if pid:
+                seen_place_ids.add(pid)
+            yield r
+        time.sleep(delay_between_queries)

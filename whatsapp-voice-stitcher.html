@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Stitcher</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/opus-recorder/8.0.5/recorder.min.js"></script>
+<style>
+  :root{
+    --bg: #14110F;
+    --panel: #1D1815;
+    --panel-2: #241E19;
+    --line: #33291F;
+    --amber: #E8A33D;
+    --amber-dim: #8a641f;
+    --teal: #4C8C86;
+    --text: #EDE7DD;
+    --text-dim: #A79A88;
+    --red: #C1502E;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:var(--sans); padding:24px 16px 80px;
+    min-height:100vh;
+  }
+  .wrap{max-width:640px; margin:0 auto;}
+  .masthead{
+    display:flex; align-items:baseline; gap:10px; margin-bottom:4px;
+  }
+  .masthead .dot{
+    width:10px; height:10px; border-radius:50%; background:var(--amber);
+    box-shadow:0 0 8px var(--amber);
+  }
+  h1{
+    font-size:22px; letter-spacing:0.5px; margin:0; font-weight:700;
+  }
+  .sub{ color:var(--text-dim); font-size:13px; margin:0 0 24px; font-family:var(--mono); }
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:18px 18px 20px; margin-bottom:16px;
+  }
+  .panel-title{
+    display:flex; align-items:center; justify-content:space-between;
+    font-family:var(--mono); font-size:11px; letter-spacing:1.5px; text-transform:uppercase;
+    color:var(--text-dim); margin-bottom:14px;
+  }
+  .badge{
+    font-family:var(--mono); font-size:10px; padding:2px 7px; border-radius:20px;
+    border:1px solid var(--line); color:var(--text-dim);
+  }
+  .badge.ok{ color:#8FCB9A; border-color:#3a5c40; }
+  .badge.warn{ color:var(--amber); border-color:var(--amber-dim); }
+
+  textarea{
+    width:100%; background:var(--panel-2); border:1px solid var(--line); color:var(--text);
+    border-radius:8px; padding:10px; font-family:var(--mono); font-size:13px; resize:vertical;
+    min-height:80px;
+  }
+  input[type=file]{ color:var(--text-dim); font-size:13px; }
+
+  button{
+    font-family:var(--sans); font-weight:600; font-size:14px; border:none; border-radius:7px;
+    padding:10px 16px; cursor:pointer; transition:transform .08s ease, opacity .15s ease;
+  }
+  button:active{ transform:scale(0.97); }
+  button:disabled{ opacity:0.35; cursor:not-allowed; }
+  .btn-primary{ background:var(--amber); color:#1a1208; }
+  .btn-secondary{ background:var(--panel-2); color:var(--text); border:1px solid var(--line); }
+  .btn-teal{ background:var(--teal); color:#08201d; }
+  .btn-danger{ background:transparent; color:var(--red); border:1px solid #5c2f22; }
+  .btn-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+
+  .rec-btn{
+    display:flex; align-items:center; gap:10px; padding:12px 18px; font-size:15px;
+  }
+  .rec-btn .ring{
+    width:12px; height:12px; border-radius:50%; background:var(--red);
+  }
+  .rec-btn.recording .ring{ animation:pulse 1s infinite; }
+  @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.25;} }
+  .timer{ font-family:var(--mono); font-size:13px; color:var(--text-dim); }
+
+  .contact-list{ display:flex; flex-direction:column; gap:6px; max-height:280px; overflow-y:auto; }
+  .contact{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:9px 12px;
+    cursor:pointer;
+  }
+  .contact.active{ border-color:var(--amber); background:#2a2115; }
+  .contact-name{ font-weight:600; font-size:14px; }
+  .contact-status{ font-family:var(--mono); font-size:10px; color:var(--text-dim); text-transform:uppercase; }
+  .contact-status.sent{ color:#8FCB9A; }
+  .contact-status.ready{ color:var(--amber); }
+  .contact .del{ background:none; border:none; color:var(--text-dim); font-size:16px; padding:0 4px; }
+
+  .empty{ color:var(--text-dim); font-size:13px; font-style:italic; padding:8px 0; }
+
+  audio{ width:100%; margin-top:10px; }
+
+  .active-box{
+    border-top:1px dashed var(--line); margin-top:14px; padding-top:14px;
+  }
+  .active-name{ font-size:16px; font-weight:700; margin-bottom:2px; }
+  .active-hint{ font-size:12px; color:var(--text-dim); margin-bottom:10px; }
+
+  .step-locked{ opacity:0.4; pointer-events:none; }
+
+  .footer-note{
+    text-align:center; color:var(--text-dim); font-size:11px; font-family:var(--mono);
+    margin-top:24px; line-height:1.6;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="masthead"><div class="dot" id="mastDot"></div><h1>VOICE STITCHER</h1></div>
+  <p class="sub">snimi pozdrav → spoji s pitchem → skini → povuci u WhatsApp</p>
+
+  <!-- STEP 1: FIXED PITCH -->
+  <div class="panel" id="fixedPanel">
+    <div class="panel-title">
+      <span>01 — fiksni dio pitcha</span>
+      <span class="badge" id="fixedBadge">nije postavljen</span>
+    </div>
+    <div id="fixedSetup">
+      <input type="file" id="fixedFile" accept="audio/*">
+      <div class="btn-row">
+        <button class="btn-primary" id="fixedSaveBtn" disabled>Spremi kao fiksni dio</button>
+      </div>
+    </div>
+    <audio id="fixedPreview" controls style="display:none;"></audio>
+    <div class="btn-row" id="fixedReplaceRow" style="display:none;">
+      <button class="btn-secondary" id="fixedReplaceBtn">Zamijeni fiksni dio</button>
+    </div>
+  </div>
+
+  <!-- STEP 2: CONTACTS -->
+  <div class="panel step-locked" id="contactsPanel">
+    <div class="panel-title"><span>02 — prospekti</span><span class="badge" id="contactCountBadge">0</span></div>
+    <textarea id="contactInput" placeholder="Ime, status (opcionalno)&#10;Ivan Petrović&#10;Ana Kovač, za snimiti"></textarea>
+    <div class="btn-row">
+      <button class="btn-primary" id="addContactsBtn">Dodaj na listu</button>
+      <button class="btn-danger" id="clearContactsBtn">Isprazni listu</button>
+    </div>
+    <div class="contact-list" id="contactList" style="margin-top:14px;"></div>
+  </div>
+
+  <!-- STEP 3: RECORD -->
+  <div class="panel step-locked" id="recordPanel">
+    <div class="panel-title"><span>03 — pozdrav &amp; spajanje</span></div>
+    <div id="noActive" class="empty">Odaberi prospekta s liste iznad.</div>
+    <div id="activeBox" class="active-box" style="display:none;">
+      <div class="active-name" id="activeName"></div>
+      <div class="active-hint">Snimi kratki osobni pozdrav (2-4 sekunde) — ime i "Dobar dan".</div>
+
+      <div class="btn-row">
+        <button class="rec-btn btn-secondary" id="recBtn"><span class="ring"></span><span id="recBtnLabel">Snimi pozdrav</span></button>
+        <span class="timer" id="recTimer"></span>
+      </div>
+
+      <audio id="greetingPreview" controls style="display:none;"></audio>
+
+      <div class="btn-row" id="postGreetingRow" style="display:none;">
+        <button class="btn-secondary" id="previewFullBtn">▶ Poslušaj cijelu poruku</button>
+        <button class="btn-secondary" id="reRecordBtn">Snimi ponovno</button>
+        <button class="btn-teal" id="stitchBtn">Zadovoljan sam — spoji →</button>
+      </div>
+
+      <div id="stitchStatus" class="timer" style="display:none; margin-top:10px;"></div>
+      <audio id="finalPreview" controls style="display:none;"></audio>
+
+      <div class="btn-row" id="finalRow" style="display:none;">
+        <a id="downloadLink" download><button class="btn-primary">⬇ Skini .ogg</button></a>
+        <button class="btn-secondary" id="markSentBtn">Označi poslano</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="footer-note">sve ostaje u ovom tabu / lokalnoj pohrani — ništa se ne šalje na server<br>format izlaza: OGG / Opus, mono, 48kHz</p>
+</div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+
+  // ---------- storage helpers ----------
+  async function storeGet(key){
+    try{ const r = await window.storage.get(key); return r ? r.value : null; }
+    catch(e){ return null; }
+  }
+  async function storeSet(key, value){
+    try{ await window.storage.set(key, value); }catch(e){ console.error('storage set failed', e); }
+  }
+
+  function slugify(name){
+    const map = {š:'s',Š:'S',đ:'dj',Đ:'Dj',č:'c',Č:'C',ć:'c',Ć:'C',ž:'z',Ž:'Z'};
+    return name.replace(/[šŠđĐčČćĆžŽ]/g, c=>map[c])
+      .toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+  }
+
+  function blobToBase64(blob){
+    return new Promise((resolve,reject)=>{
+      const r = new FileReader();
+      r.onload = () => resolve(r.result.split(',')[1]);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+  function base64ToBlob(b64, mime){
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for(let i=0;i<bin.length;i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], {type:mime});
+  }
+
+  // ---------- STEP 1: fixed pitch ----------
+  let fixedBlob = null, fixedMime = null;
+
+  function setFixedBadge(ok){
+    const b = $('fixedBadge');
+    b.textContent = ok ? 'spremljeno' : 'nije postavljen';
+    b.className = 'badge ' + (ok ? 'ok' : 'warn');
+    $('contactsPanel').classList.toggle('step-locked', !ok);
+    $('recordPanel').classList.toggle('step-locked', !ok);
+  }
+
+  $('fixedFile').addEventListener('change', () => {
+    $('fixedSaveBtn').disabled = !$('fixedFile').files.length;
+  });
+
+  $('fixedSaveBtn').addEventListener('click', async () => {
+    const file = $('fixedFile').files[0];
+    if(!file) return;
+    fixedBlob = file;
+    fixedMime = file.type || 'audio/mpeg';
+    const b64 = await blobToBase64(fixedBlob);
+    await storeSet('fixed-pitch-audio', JSON.stringify({mime:fixedMime, b64}));
+    showFixedPreview();
+  });
+
+  $('fixedReplaceBtn').addEventListener('click', () => {
+    $('fixedSetup').style.display = 'block';
+    $('fixedReplaceRow').style.display = 'none';
+    $('fixedPreview').style.display = 'none';
+    setFixedBadge(false);
+  });
+
+  function showFixedPreview(){
+    $('fixedPreview').src = URL.createObjectURL(fixedBlob);
+    $('fixedPreview').style.display = 'block';
+    $('fixedSetup').style.display = 'none';
+    $('fixedReplaceRow').style.display = 'flex';
+    setFixedBadge(true);
+  }
+
+  async function loadFixedFromStorage(){
+    const raw = await storeGet('fixed-pitch-audio');
+    if(raw){
+      try{
+        const {mime, b64} = JSON.parse(raw);
+        fixedMime = mime;
+        fixedBlob = base64ToBlob(b64, mime);
+        showFixedPreview();
+      }catch(e){}
+    }
+  }
+
+  // ---------- STEP 2: contacts ----------
+  let contacts = []; // {id, name, status}
+  const STATUS = {TODO:'za snimiti', READY:'spremno', SENT:'poslano'};
+
+  function renderContacts(){
+    $('contactCountBadge').textContent = contacts.length;
+    const list = $('contactList');
+    list.innerHTML = '';
+    if(!contacts.length){
+      list.innerHTML = '<div class="empty">Lista je prazna — zalijepi imena iznad.</div>';
+      return;
+    }
+    contacts.forEach(c => {
+      const row = document.createElement('div');
+      row.className = 'contact' + (activeId === c.id ? ' active' : '');
+      const statusClass = c.status === STATUS.SENT ? 'sent' : (c.status === STATUS.READY ? 'ready' : '');
+      row.innerHTML = `
+        <div>
+          <div class="contact-name">${c.name}</div>
+          <div class="contact-status ${statusClass}">${c.status}</div>
+        </div>
+        <button class="del" data-id="${c.id}">✕</button>
+      `;
+      row.addEventListener('click', (e) => {
+        if(e.target.classList.contains('del')) return;
+        selectContact(c.id);
+      });
+      row.querySelector('.del').addEventListener('click', (e) => {
+        e.stopPropagation();
+        contacts = contacts.filter(x => x.id !== c.id);
+        if(activeId === c.id) deselectContact();
+        persistContacts();
+        renderContacts();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  function persistContacts(){ storeSet('contacts-list', JSON.stringify(contacts)); }
+
+  $('addContactsBtn').addEventListener('click', () => {
+    const lines = $('contactInput').value.split('\n').map(l=>l.trim()).filter(Boolean);
+    lines.forEach(line => {
+      const [namePart, statusPart] = line.split(',');
+      const name = namePart.trim();
+      if(!name) return;
+      contacts.push({
+        id: Date.now() + '-' + Math.random().toString(36).slice(2,7),
+        name,
+        status: (statusPart && statusPart.trim()) || STATUS.TODO
+      });
+    });
+    $('contactInput').value = '';
+    persistContacts();
+    renderContacts();
+  });
+
+  $('clearContactsBtn').addEventListener('click', () => {
+    if(!confirm('Sigurno isprazniti cijelu listu prospekata?')) return;
+    contacts = [];
+    deselectContact();
+    persistContacts();
+    renderContacts();
+  });
+
+  // ---------- STEP 3: active contact + recording ----------
+  let activeId = null;
+  let mediaRecorder = null, mediaChunks = [], greetingBlob = null, micStream = null;
+  let recTimerInterval = null, recStartTime = null;
+  let finalBlob = null;
+
+  function selectContact(id){
+    activeId = id;
+    resetRecordingUI();
+    const c = contacts.find(x=>x.id===id);
+    $('noActive').style.display = 'none';
+    $('activeBox').style.display = 'block';
+    $('activeName').textContent = c.name;
+    renderContacts();
+  }
+  function deselectContact(){
+    activeId = null;
+    $('noActive').style.display = 'block';
+    $('activeBox').style.display = 'none';
+    resetRecordingUI();
+  }
+
+  function resetRecordingUI(){
+    greetingBlob = null; finalBlob = null;
+    $('greetingPreview').style.display = 'none';
+    $('postGreetingRow').style.display = 'none';
+    $('stitchStatus').style.display = 'none';
+    $('finalPreview').style.display = 'none';
+    $('finalRow').style.display = 'none';
+    $('recTimer').textContent = '';
+    $('recBtnLabel').textContent = 'Snimi pozdrav';
+    $('recBtn').classList.remove('recording');
+  }
+
+  $('recBtn').addEventListener('click', async () => {
+    if(mediaRecorder && mediaRecorder.state === 'recording'){
+      mediaRecorder.stop();
+      return;
+    }
+    try{
+      micStream = await navigator.mediaDevices.getUserMedia({audio:true});
+    }catch(e){
+      alert('Nije moguće pristupiti mikrofonu: ' + e.message);
+      return;
+    }
+    mediaChunks = [];
+    mediaRecorder = new MediaRecorder(micStream);
+    mediaRecorder.ondataavailable = e => { if(e.data.size) mediaChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      greetingBlob = new Blob(mediaChunks, {type: mediaRecorder.mimeType || 'audio/webm'});
+      micStream.getTracks().forEach(t=>t.stop());
+      clearInterval(recTimerInterval);
+      $('recBtn').classList.remove('recording');
+      $('recBtnLabel').textContent = 'Snimi pozdrav';
+      $('greetingPreview').src = URL.createObjectURL(greetingBlob);
+      $('greetingPreview').style.display = 'block';
+      $('postGreetingRow').style.display = 'flex';
+    };
+    mediaRecorder.start();
+    recStartTime = Date.now();
+    recTimerInterval = setInterval(() => {
+      const s = ((Date.now()-recStartTime)/1000).toFixed(1);
+      $('recTimer').textContent = s + 's';
+    }, 100);
+    $('recBtn').classList.add('recording');
+    $('recBtnLabel').textContent = 'Zaustavi';
+  });
+
+  $('reRecordBtn').addEventListener('click', () => {
+    resetRecordingUI();
+  });
+
+  $('previewFullBtn').addEventListener('click', () => {
+    if(!greetingBlob || !fixedBlob) return;
+    const a1 = new Audio(URL.createObjectURL(greetingBlob));
+    const a2 = new Audio(URL.createObjectURL(fixedBlob));
+    a1.onended = () => a2.play();
+    a1.play();
+  });
+
+  // ---------- stitch + encode to ogg/opus ----------
+  $('stitchBtn').addEventListener('click', async () => {
+    if(!greetingBlob || !fixedBlob) return;
+    $('stitchStatus').style.display = 'block';
+    $('stitchStatus').textContent = 'Spajam i enkodiram u OGG/Opus...';
+    try{
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const [greetBuf, fixedBuf] = await Promise.all([
+        greetingBlob.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab.slice(0))),
+        fixedBlob.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab.slice(0)))
+      ]);
+
+      const sr = audioCtx.sampleRate;
+      const silenceSec = 0.35;
+      const silenceLen = Math.round(sr * silenceSec);
+      const g = greetBuf.getChannelData(0);
+      const f = fixedBuf.getChannelData(0);
+      const total = g.length + silenceLen + f.length;
+      const combined = new Float32Array(total);
+      combined.set(g, 0);
+      combined.set(f, g.length + silenceLen);
+
+      const combinedBuffer = audioCtx.createBuffer(1, total, sr);
+      combinedBuffer.copyToChannel(combined, 0);
+
+      const dest = audioCtx.createMediaStreamDestination();
+      const src = audioCtx.createBufferSource();
+      src.buffer = combinedBuffer;
+      src.connect(dest);
+
+      const sourceNode = new MediaStreamAudioSourceNode(audioCtx, {mediaStream: dest.stream});
+
+      const rec = new Recorder({
+        sourceNode: sourceNode,
+        encoderPath: 'https://cdnjs.cloudflare.com/ajax/libs/opus-recorder/8.0.5/encoderWorker.min.js',
+        numberOfChannels: 1,
+        encoderSampleRate: 48000,
+        streamPages: false
+      });
+
+      const chunks = [];
+      rec.ondataavailable = (arrayBuffer) => { chunks.push(arrayBuffer); };
+      rec.onstop = async () => {
+        finalBlob = new Blob(chunks, {type:'audio/ogg; codecs=opus'});
+        $('finalPreview').src = URL.createObjectURL(finalBlob);
+        $('finalPreview').style.display = 'block';
+        $('stitchStatus').textContent = 'Gotovo — spremno za slanje.';
+
+        const c = contacts.find(x=>x.id===activeId);
+        const filename = slugify(c ? c.name : 'poruka') + '.ogg';
+        const dl = $('downloadLink');
+        dl.href = URL.createObjectURL(finalBlob);
+        dl.download = filename;
+        $('finalRow').style.display = 'flex';
+
+        if(c){
+          c.status = STATUS.READY;
+          persistContacts();
+          renderContacts();
+        }
+      };
+
+      await rec.start();
+      src.start();
+      src.onended = () => { rec.stop(); };
+
+    }catch(err){
+      console.error(err);
+      $('stitchStatus').textContent = 'Greška: ' + err.message;
+    }
+  });
+
+  $('markSentBtn').addEventListener('click', () => {
+    const c = contacts.find(x=>x.id===activeId);
+    if(c){
+      c.status = STATUS.SENT;
+      persistContacts();
+      renderContacts();
+    }
+  });
+
+  // ---------- init ----------
+  (async function init(){
+    await loadFixedFromStorage();
+    const raw = await storeGet('contacts-list');
+    if(raw){
+      try{ contacts = JSON.parse(raw); }catch(e){ contacts = []; }
+    }
+    renderContacts();
+  })();
+
+})();
+</script>
+</body>
+</html>

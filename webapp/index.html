@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="hr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voice Stitcher</title>
+<!-- opus-recorder za OGG/Opus encoding -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/opus-recorder/8.0.5/recorder.min.js"></script>
+<!-- Google Identity Services (OAuth 2.0, client-side) -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{
+    --bg: #14110F;
+    --panel: #1D1815;
+    --panel-2: #241E19;
+    --line: #33291F;
+    --amber: #E8A33D;
+    --amber-dim: #8a641f;
+    --teal: #4C8C86;
+    --text: #EDE7DD;
+    --text-dim: #A79A88;
+    --red: #C1502E;
+    --green: #8FCB9A;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:var(--sans); padding:24px 16px 80px;
+    min-height:100vh;
+  }
+  .wrap{max-width:640px; margin:0 auto;}
+  .masthead{display:flex; align-items:baseline; gap:10px; margin-bottom:4px;}
+  .masthead .dot{width:10px; height:10px; border-radius:50%; background:var(--amber); box-shadow:0 0 8px var(--amber);}
+  h1{font-size:22px; letter-spacing:0.5px; margin:0; font-weight:700;}
+  .sub{color:var(--text-dim); font-size:13px; margin:0 0 24px; font-family:var(--mono);}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px 18px 20px; margin-bottom:16px;}
+  .panel-title{display:flex; align-items:center; justify-content:space-between; font-family:var(--mono); font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:var(--text-dim); margin-bottom:14px;}
+  .badge{font-family:var(--mono); font-size:10px; padding:2px 7px; border-radius:20px; border:1px solid var(--line); color:var(--text-dim);}
+  .badge.ok{color:var(--green); border-color:#3a5c40;}
+  .badge.warn{color:var(--amber); border-color:var(--amber-dim);}
+
+  textarea{width:100%; background:var(--panel-2); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:10px; font-family:var(--mono); font-size:13px; resize:vertical; min-height:80px;}
+  input[type=file]{color:var(--text-dim); font-size:13px;}
+
+  button{font-family:var(--sans); font-weight:600; font-size:14px; border:none; border-radius:7px; padding:10px 16px; cursor:pointer; transition:transform .08s ease, opacity .15s ease;}
+  button:active{transform:scale(0.97);}
+  button:disabled{opacity:0.35; cursor:not-allowed;}
+  .btn-primary{background:var(--amber); color:#1a1208;}
+  .btn-secondary{background:var(--panel-2); color:var(--text); border:1px solid var(--line);}
+  .btn-teal{background:var(--teal); color:#08201d;}
+  .btn-danger{background:transparent; color:var(--red); border:1px solid #5c2f22;}
+  .btn-green{background:#2a5c35; color:var(--green); border:1px solid #3a7c45;}
+  .btn-row{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;}
+
+  .rec-btn{display:flex; align-items:center; gap:10px; padding:12px 18px; font-size:15px;}
+  .rec-btn .ring{width:12px; height:12px; border-radius:50%; background:var(--red);}
+  .rec-btn.recording .ring{animation:pulse 1s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.25;}}
+  .timer{font-family:var(--mono); font-size:13px; color:var(--text-dim);}
+
+  .contact-list{display:flex; flex-direction:column; gap:6px; max-height:320px; overflow-y:auto;}
+  .contact{display:flex; align-items:flex-start; justify-content:space-between; gap:8px; background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:9px 12px; cursor:pointer;}
+  .contact.active{border-color:var(--amber); background:#2a2115;}
+  .contact-name{font-weight:600; font-size:14px;}
+  .contact-owner{font-size:12px; color:var(--text-dim);}
+  .contact-desc{font-size:12px; color:var(--text-dim); margin-top:2px; font-style:italic;}
+  .contact-status{font-family:var(--mono); font-size:10px; color:var(--text-dim); text-transform:uppercase; white-space:nowrap;}
+  .contact-status.sent{color:var(--green);}
+  .contact-status.ready{color:var(--amber);}
+  .contact-status.inprogress{color:var(--teal);}
+  .contact .del{background:none; border:none; color:var(--text-dim); font-size:16px; padding:0 4px;}
+  .empty{color:var(--text-dim); font-size:13px; font-style:italic; padding:8px 0;}
+
+  audio{width:100%; margin-top:10px;}
+
+  .active-box{border-top:1px dashed var(--line); margin-top:14px; padding-top:14px;}
+  .active-name{font-size:18px; font-weight:700; margin-bottom:2px;}
+  .active-owner{font-size:13px; color:var(--teal); margin-bottom:4px;}
+  .active-desc{font-size:13px; color:var(--text-dim); margin-bottom:12px; font-style:italic; line-height:1.5;}
+  .active-hint{font-size:12px; color:var(--text-dim); margin-bottom:10px;}
+
+  .step-locked{opacity:0.4; pointer-events:none;}
+
+  .auth-section{display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
+  .auth-user{font-size:13px; color:var(--text-dim); font-family:var(--mono);}
+
+  .sheets-status{font-size:12px; font-family:var(--mono); padding:4px 8px; border-radius:4px;}
+  .sheets-status.ok{color:var(--green);}
+  .sheets-status.err{color:var(--red);}
+  .sheets-status.info{color:var(--amber);}
+
+  .footer-note{text-align:center; color:var(--text-dim); font-size:11px; font-family:var(--mono); margin-top:24px; line-height:1.6;}
+
+  #toastContainer{position:fixed; bottom:24px; right:16px; display:flex; flex-direction:column; gap:8px; z-index:100;}
+  .toast{background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 16px; font-size:13px; font-family:var(--mono); animation:fadeIn .2s ease; max-width:300px;}
+  .toast.ok{border-color:#3a5c40; color:var(--green);}
+  .toast.err{border-color:#5c2f22; color:var(--red);}
+  @keyframes fadeIn{from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="masthead"><div class="dot" id="mastDot"></div><h1>VOICE STITCHER</h1></div>
+  <p class="sub">snimi pozdrav → spoji s pitchem → skini → povuci u WhatsApp</p>
+
+  <!-- GOOGLE AUTH PANEL -->
+  <div class="panel" id="authPanel">
+    <div class="panel-title">
+      <span>00 — Google Sheets veza</span>
+      <span class="badge" id="authBadge">nije prijavljeno</span>
+    </div>
+    <div class="auth-section">
+      <div id="gsiButtonDiv"></div>
+      <span class="auth-user" id="authUser"></span>
+      <button class="btn-danger" id="signOutBtn" style="display:none; font-size:12px; padding:6px 12px;">Odjavi se</button>
+    </div>
+    <div id="sheetsStatus" class="sheets-status info" style="margin-top:8px; display:none;"></div>
+  </div>
+
+  <!-- STEP 1: FIXED PITCH -->
+  <div class="panel" id="fixedPanel">
+    <div class="panel-title">
+      <span>01 — fiksni dio pitcha</span>
+      <span class="badge" id="fixedBadge">nije postavljen</span>
+    </div>
+    <div id="fixedSetup">
+      <input type="file" id="fixedFile" accept="audio/*">
+      <div class="btn-row">
+        <button class="btn-primary" id="fixedSaveBtn" disabled>Spremi kao fiksni dio</button>
+      </div>
+    </div>
+    <audio id="fixedPreview" controls style="display:none;"></audio>
+    <div class="btn-row" id="fixedReplaceRow" style="display:none;">
+      <button class="btn-secondary" id="fixedReplaceBtn">Zamijeni fiksni dio</button>
+    </div>
+  </div>
+
+  <!-- STEP 2: LEADS -->
+  <div class="panel step-locked" id="contactsPanel">
+    <div class="panel-title"><span>02 — lead-ovi</span><span class="badge" id="contactCountBadge">0</span></div>
+    <div class="btn-row" style="margin-top:0; margin-bottom:14px;">
+      <button class="btn-secondary" id="loadSheetBtn" style="font-size:13px; padding:7px 12px;">↻ Učitaj iz Sheeta</button>
+      <button class="btn-danger" id="clearContactsBtn" style="font-size:13px; padding:7px 12px;">Isprazni listu</button>
+    </div>
+    <div class="contact-list" id="contactList"></div>
+  </div>
+
+  <!-- STEP 3: RECORD -->
+  <div class="panel step-locked" id="recordPanel">
+    <div class="panel-title"><span>03 — pozdrav &amp; spajanje</span></div>
+    <div id="noActive" class="empty">Odaberi lead s liste iznad.</div>
+    <div id="activeBox" class="active-box" style="display:none;">
+      <div class="active-name" id="activeName"></div>
+      <div class="active-owner" id="activeOwner"></div>
+      <div class="active-desc" id="activeDesc"></div>
+      <div class="active-hint">Snimi kratki osobni pozdrav (2-4 sekunde) — ime vlasnika i "Dobar dan".</div>
+
+      <div class="btn-row">
+        <button class="rec-btn btn-secondary" id="recBtn"><span class="ring"></span><span id="recBtnLabel">Snimi pozdrav</span></button>
+        <span class="timer" id="recTimer"></span>
+      </div>
+
+      <audio id="greetingPreview" controls style="display:none;"></audio>
+
+      <div class="btn-row" id="postGreetingRow" style="display:none;">
+        <button class="btn-secondary" id="previewFullBtn">▶ Poslušaj cijelu poruku</button>
+        <button class="btn-secondary" id="reRecordBtn">Snimi ponovno</button>
+        <button class="btn-teal" id="stitchBtn">Zadovoljan sam — spoji →</button>
+      </div>
+
+      <div id="stitchStatus" class="timer" style="display:none; margin-top:10px;"></div>
+      <audio id="finalPreview" controls style="display:none;"></audio>
+
+      <div class="btn-row" id="finalRow" style="display:none;">
+        <a id="downloadLink" download><button class="btn-primary">⬇ Skini .ogg</button></a>
+        <button class="btn-green" id="markSentBtn">✓ Označi poslano</button>
+      </div>
+    </div>
+  </div>
+
+  <p class="footer-note">OGG / Opus, mono, 48kHz · status se automatski upisuje u Google Sheets</p>
+</div>
+
+<div id="toastContainer"></div>
+
+<script>
+(function(){
+'use strict';
+
+// ─── CONFIG ────────────────────────────────────────────────────────────────
+// Zamijeni s pravim vrijednostima (ili učitaj iz meta tagova):
+const OAUTH_CLIENT_ID   = '401516118047-h0c5u4u1ngclf2dkrade0c5n6r9decup.apps.googleusercontent.com';
+const SHEETS_ID         = '1ail8Ervy7SD_lap6GTc36Owh9Tdbq3mXjDvxMmxLz18';
+const SHEET_TAB         = 'Leads';
+const SHEETS_API_BASE   = 'https://sheets.googleapis.com/v4/spreadsheets';
+
+// Kolone (A=0, B=1, ...) — mora odgovarati shemi u sheets.py
+const COL = {
+  lead_id:        0,
+  naziv_firme:    1,
+  oib:            2,
+  vlasnik:        3,
+  telefon:        4,
+  web:            5,
+  grad:           6,
+  zupanija:       7,
+  opis:           8,
+  broj_zaposlenih:9,
+  godina_osnutka: 10,
+  izvor:          11,
+  status:         12,
+  claimed_by:     13,
+  datum_dodan:    14,
+  datum_poslano:  15,
+  link:           16,
+};
+
+// ─── STATE ─────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+let accessToken = null;
+let currentUser = null;
+let leads = [];      // [{lead_id, naziv, vlasnik, opis, status, _row}, ...]
+let activeId = null;
+let fixedBlob = null, fixedMime = null;
+let greetingBlob = null, finalBlob = null;
+let mediaRecorder = null, mediaChunks = [], micStream = null;
+let recTimerInterval = null, recStartTime = null;
+
+// ─── UTILS ─────────────────────────────────────────────────────────────────
+function slugify(name){
+  const map={š:'s',Š:'S',đ:'dj',Đ:'Dj',č:'c',Č:'C',ć:'c',Ć:'C',ž:'z',Ž:'Z'};
+  return name.replace(/[šŠđĐčČćĆžŽ]/g,c=>map[c])
+    .toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'');
+}
+
+function blobToBase64(blob){
+  return new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>res(r.result.split(',')[1]);
+    r.onerror=rej;
+    r.readAsDataURL(blob);
+  });
+}
+function base64ToBlob(b64,mime){
+  const bin=atob(b64),arr=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return new Blob([arr],{type:mime});
+}
+
+function toast(msg, type='ok', duration=3500){
+  const el=document.createElement('div');
+  el.className=`toast ${type}`;
+  el.textContent=msg;
+  $('toastContainer').appendChild(el);
+  setTimeout(()=>el.remove(), duration);
+}
+
+function today(){
+  return new Date().toISOString().split('T')[0];
+}
+
+function nowTimestamp(){
+  return new Date().toLocaleString('hr-HR',{hour12:false}).replace(',','');
+}
+
+// ─── STORAGE (localStorage s window.storage fallback) ─────────────────────
+async function storeGet(key){
+  try{
+    if(window.storage){ const r=await window.storage.get(key); return r?.value??null; }
+  }catch{}
+  try{ return localStorage.getItem(key); }catch{ return null; }
+}
+async function storeSet(key,value){
+  try{
+    if(window.storage){ await window.storage.set(key,value); return; }
+  }catch{}
+  try{ localStorage.setItem(key,value); }catch{}
+}
+
+// ─── GOOGLE OAUTH (GIS) ────────────────────────────────────────────────────
+function initGSI(){
+  if(typeof google === 'undefined' || !google.accounts) return;
+  google.accounts.oauth2.initTokenClient({
+    client_id: OAUTH_CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    callback: onTokenResponse,
+  });
+
+  google.accounts.id.initialize({
+    client_id: OAUTH_CLIENT_ID,
+    callback: onIdTokenResponse,
+    auto_select: true,
+  });
+  google.accounts.id.renderButton($('gsiButtonDiv'), {
+    theme:'filled_black', size:'medium', text:'sign_in_with', shape:'pill',
+  });
+}
+
+function onIdTokenResponse(resp){
+  // Dekodiramo JWT da dohvatimo ime — token je samo za identifikaciju
+  const payload = JSON.parse(atob(resp.credential.split('.')[1]));
+  currentUser = payload.name || payload.email || 'Korisnik';
+  $('authUser').textContent = currentUser;
+  // Zatraži access token za Sheets API
+  requestAccessToken();
+}
+
+function requestAccessToken(){
+  if(typeof google === 'undefined') return;
+  const tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: OAUTH_CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/spreadsheets',
+    callback: onTokenResponse,
+  });
+  tokenClient.requestAccessToken({prompt:''});
+}
+
+function onTokenResponse(tokenResp){
+  if(tokenResp.error){
+    toast('OAuth greška: '+tokenResp.error, 'err');
+    return;
+  }
+  accessToken = tokenResp.access_token;
+  setAuthState(true);
+}
+
+function setAuthState(loggedIn){
+  $('authBadge').textContent = loggedIn ? 'prijavljeno' : 'nije prijavljeno';
+  $('authBadge').className = 'badge ' + (loggedIn ? 'ok' : '');
+  $('signOutBtn').style.display = loggedIn ? 'inline-block' : 'none';
+  $('gsiButtonDiv').style.display = loggedIn ? 'none' : 'block';
+  $('contactsPanel').classList.toggle('step-locked', !fixedBlob);
+  if(loggedIn) toast('Prijavljeni kao ' + currentUser);
+}
+
+$('signOutBtn')?.addEventListener('click', ()=>{
+  accessToken = null;
+  currentUser = null;
+  google.accounts.id.disableAutoSelect();
+  $('authUser').textContent = '';
+  setAuthState(false);
+  leads = [];
+  renderLeads();
+});
+
+// ─── SHEETS API ─────────────────────────────────────────────────────────────
+function sheetsStatus(msg, type='info'){
+  const el = $('sheetsStatus');
+  el.style.display = 'block';
+  el.className = 'sheets-status ' + type;
+  el.textContent = msg;
+}
+
+async function sheetsRequest(method, path, body=null){
+  if(!accessToken) throw new Error('Nije prijavljeno');
+  const url = `${SHEETS_API_BASE}/${SHEETS_ID}${path}`;
+  const opts = {
+    method,
+    headers: {
+      'Authorization': 'Bearer ' + accessToken,
+      'Content-Type': 'application/json',
+    },
+  };
+  if(body) opts.body = JSON.stringify(body);
+  const resp = await fetch(url, opts);
+  if(resp.status === 401){
+    // Token istekao — zatraži novi
+    accessToken = null;
+    requestAccessToken();
+    throw new Error('Token istekao — molimo se prijavite ponovo.');
+  }
+  if(!resp.ok){
+    const err = await resp.text();
+    throw new Error(`Sheets API ${resp.status}: ${err}`);
+  }
+  return resp.json();
+}
+
+async function loadLeadsFromSheet(){
+  if(!accessToken){ toast('Prijavite se prvo!', 'err'); return; }
+  sheetsStatus('Učitavam leadove iz Sheeta...', 'info');
+  try{
+    const data = await sheetsRequest('GET',
+      `/values/'${SHEET_TAB}'!A:Q`
+    );
+    const rows = data.values || [];
+    if(rows.length < 2){ sheetsStatus('Sheet je prazan.', 'info'); return; }
+
+    // Filtriraj samo 'qualified' i neobrađene (ne sent, ne in_progress od drugog)
+    leads = rows.slice(1)
+      .filter(r => {
+        const status = r[COL.status] || '';
+        return status === 'qualified';
+      })
+      .map((r, i) => ({
+        lead_id:   r[COL.lead_id]     || '',
+        naziv:     r[COL.naziv_firme] || '',
+        vlasnik:   r[COL.vlasnik]     || '',
+        opis:      r[COL.opis]        || '',
+        telefon:   r[COL.telefon]     || '',
+        status:    r[COL.status]      || '',
+        claimed_by: r[COL.claimed_by] || '',
+        _rowIndex: i + 2, // 1-indexed, +1 za header
+      }));
+
+    sheetsStatus(`Učitano ${leads.length} qualified leadova.`, 'ok');
+    renderLeads();
+  } catch(e){
+    sheetsStatus('Greška: ' + e.message, 'err');
+    toast('Nije moguće učitati Sheet: ' + e.message, 'err', 5000);
+  }
+}
+
+async function writeToSheet(lead_id, updates){
+  const lead = leads.find(l => l.lead_id === lead_id);
+  if(!lead){ return; }
+  if(!lead._rowIndex){
+    toast('Sheet row nepoznat — učitaj listu iz Sheeta za upis statusa.', 'err', 5000);
+    return;
+  }
+  const rowIdx = lead._rowIndex;
+
+  // Dohvati cijeli red
+  try{
+    const data = await sheetsRequest('GET',
+      `/values/'${SHEET_TAB}'!A${rowIdx}:Q${rowIdx}`
+    );
+    const row = (data.values || [[]])[0] || [];
+    // Dopuni do Q (17 stupaca)
+    while(row.length < 17) row.push('');
+    // Primijeni updates
+    for(const [key, val] of Object.entries(updates)){
+      if(COL[key] !== undefined) row[COL[key]] = val;
+    }
+    await sheetsRequest('PUT',
+      `/values/'${SHEET_TAB}'!A${rowIdx}:Q${rowIdx}?valueInputOption=USER_ENTERED`,
+      { values: [row] }
+    );
+    // Ažuriraj lokalni state
+    Object.assign(lead, updates);
+  } catch(e){
+    toast('Sheet write greška: ' + e.message, 'err', 5000);
+    throw e;
+  }
+}
+
+// ─── LEADS LISTA ───────────────────────────────────────────────────────────
+function renderLeads(){
+  $('contactCountBadge').textContent = leads.length;
+  const list = $('contactList');
+  list.innerHTML = '';
+  if(!leads.length){
+    list.innerHTML = '<div class="empty">Nema qualified leadova. Učitaj iz Sheeta ili pokreni pipeline.</div>';
+    return;
+  }
+  leads.forEach(l => {
+    const row = document.createElement('div');
+    row.className = 'contact' + (activeId === l.lead_id ? ' active' : '');
+    const statusCls = l.status === 'sent' ? 'sent' : l.status === 'audio_ready' ? 'ready' : l.status === 'in_progress' ? 'inprogress' : '';
+    const statusLabel = l.status === 'sent' ? 'poslano' : l.status === 'audio_ready' ? 'audio ready' : l.status === 'in_progress' ? 'u obradi' : l.status;
+    row.innerHTML = `
+      <div style="flex:1; min-width:0;">
+        <div class="contact-name">${l.naziv}</div>
+        ${l.vlasnik ? `<div class="contact-owner">${l.vlasnik}</div>` : ''}
+        ${l.opis ? `<div class="contact-desc">${l.opis.slice(0,80)}${l.opis.length>80?'…':''}</div>` : ''}
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+        <span class="contact-status ${statusCls}">${statusLabel}</span>
+        ${l.claimed_by && l.claimed_by !== currentUser ? `<span class="contact-status" style="color:var(--red)">🔒 ${l.claimed_by}</span>` : ''}
+      </div>
+    `;
+    row.addEventListener('click', () => selectLead(l.lead_id));
+    list.appendChild(row);
+  });
+}
+
+async function selectLead(id){
+  const lead = leads.find(l => l.lead_id === id);
+  if(!lead) return;
+
+  // Soft lock — upiši in_progress + claimed_by
+  if(lead.status === 'qualified'){
+    try{
+      await writeToSheet(id, {
+        status: 'in_progress',
+        claimed_by: currentUser || 'Nepoznato',
+      });
+      toast('Lead zauzet — status: in_progress');
+    } catch{}
+  }
+
+  activeId = id;
+  resetRecordingUI();
+  $('noActive').style.display = 'none';
+  $('activeBox').style.display = 'block';
+  $('activeName').textContent = lead.naziv;
+  $('activeOwner').textContent = lead.vlasnik ? '▶ ' + lead.vlasnik : '';
+  $('activeDesc').textContent = lead.opis || '';
+  renderLeads();
+}
+
+// ─── FIXED PITCH ───────────────────────────────────────────────────────────
+function setFixedBadge(ok){
+  const b = $('fixedBadge');
+  b.textContent = ok ? 'spremljeno' : 'nije postavljen';
+  b.className = 'badge ' + (ok ? 'ok' : 'warn');
+  const hasAuth = !!accessToken;
+  $('contactsPanel').classList.toggle('step-locked', !ok);
+  $('recordPanel').classList.toggle('step-locked', !ok);
+}
+
+$('fixedFile').addEventListener('change', () => {
+  $('fixedSaveBtn').disabled = !$('fixedFile').files.length;
+});
+
+$('fixedSaveBtn').addEventListener('click', async () => {
+  const file = $('fixedFile').files[0];
+  if(!file) return;
+  fixedBlob = file;
+  fixedMime = file.type || 'audio/mpeg';
+  const b64 = await blobToBase64(fixedBlob);
+  await storeSet('fixed-pitch-audio', JSON.stringify({mime:fixedMime, b64}));
+  showFixedPreview();
+});
+
+$('fixedReplaceBtn').addEventListener('click', () => {
+  $('fixedSetup').style.display = 'block';
+  $('fixedReplaceRow').style.display = 'none';
+  $('fixedPreview').style.display = 'none';
+  setFixedBadge(false);
+});
+
+function showFixedPreview(){
+  $('fixedPreview').src = URL.createObjectURL(fixedBlob);
+  $('fixedPreview').style.display = 'block';
+  $('fixedSetup').style.display = 'none';
+  $('fixedReplaceRow').style.display = 'flex';
+  setFixedBadge(true);
+}
+
+async function loadFixedFromStorage(){
+  const raw = await storeGet('fixed-pitch-audio');
+  if(raw){
+    try{
+      const {mime,b64} = JSON.parse(raw);
+      fixedMime = mime;
+      fixedBlob = base64ToBlob(b64, mime);
+      showFixedPreview();
+    }catch{}
+  }
+}
+
+// ─── RECORDING ─────────────────────────────────────────────────────────────
+function resetRecordingUI(){
+  greetingBlob = null; finalBlob = null;
+  $('greetingPreview').style.display = 'none';
+  $('postGreetingRow').style.display = 'none';
+  $('stitchStatus').style.display = 'none';
+  $('finalPreview').style.display = 'none';
+  $('finalRow').style.display = 'none';
+  $('recTimer').textContent = '';
+  $('recBtnLabel').textContent = 'Snimi pozdrav';
+  $('recBtn').classList.remove('recording');
+}
+
+$('recBtn').addEventListener('click', async () => {
+  if(mediaRecorder && mediaRecorder.state === 'recording'){
+    mediaRecorder.stop();
+    return;
+  }
+  try{
+    micStream = await navigator.mediaDevices.getUserMedia({audio:true});
+  }catch(e){
+    alert('Nije moguće pristupiti mikrofonu: ' + e.message);
+    return;
+  }
+  mediaChunks = [];
+  mediaRecorder = new MediaRecorder(micStream);
+  mediaRecorder.ondataavailable = e => { if(e.data.size) mediaChunks.push(e.data); };
+  mediaRecorder.onstop = () => {
+    greetingBlob = new Blob(mediaChunks, {type: mediaRecorder.mimeType||'audio/webm'});
+    micStream.getTracks().forEach(t=>t.stop());
+    clearInterval(recTimerInterval);
+    $('recBtn').classList.remove('recording');
+    $('recBtnLabel').textContent = 'Snimi pozdrav';
+    $('greetingPreview').src = URL.createObjectURL(greetingBlob);
+    $('greetingPreview').style.display = 'block';
+    $('postGreetingRow').style.display = 'flex';
+  };
+  mediaRecorder.start();
+  recStartTime = Date.now();
+  recTimerInterval = setInterval(()=>{
+    $('recTimer').textContent = ((Date.now()-recStartTime)/1000).toFixed(1)+'s';
+  }, 100);
+  $('recBtn').classList.add('recording');
+  $('recBtnLabel').textContent = 'Zaustavi';
+});
+
+$('reRecordBtn').addEventListener('click', () => resetRecordingUI());
+
+$('previewFullBtn').addEventListener('click', () => {
+  if(!greetingBlob || !fixedBlob) return;
+  const a1 = new Audio(URL.createObjectURL(greetingBlob));
+  const a2 = new Audio(URL.createObjectURL(fixedBlob));
+  a1.onended = () => a2.play();
+  a1.play();
+});
+
+// ─── STITCH (OGG/Opus encode) ──────────────────────────────────────────────
+$('stitchBtn').addEventListener('click', async () => {
+  if(!greetingBlob || !fixedBlob) return;
+  $('stitchStatus').style.display = 'block';
+  $('stitchStatus').textContent = 'Spajam i enkodiram u OGG/Opus...';
+  try{
+    const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    const [greetBuf, fixedBuf] = await Promise.all([
+      greetingBlob.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab.slice(0))),
+      fixedBlob.arrayBuffer().then(ab => audioCtx.decodeAudioData(ab.slice(0)))
+    ]);
+
+    const sr = audioCtx.sampleRate;
+    const silenceLen = Math.round(sr * 0.35);
+    const g = greetBuf.getChannelData(0);
+    const f = fixedBuf.getChannelData(0);
+    const total = g.length + silenceLen + f.length;
+    const combined = new Float32Array(total);
+    combined.set(g, 0);
+    combined.set(f, g.length + silenceLen);
+
+    const combinedBuffer = audioCtx.createBuffer(1, total, sr);
+    combinedBuffer.copyToChannel(combined, 0);
+
+    const dest = audioCtx.createMediaStreamDestination();
+    const src = audioCtx.createBufferSource();
+    src.buffer = combinedBuffer;
+    src.connect(dest);
+
+    const sourceNode = new MediaStreamAudioSourceNode(audioCtx, {mediaStream: dest.stream});
+    const rec = new Recorder({
+      sourceNode,
+      encoderPath: 'https://cdnjs.cloudflare.com/ajax/libs/opus-recorder/8.0.5/encoderWorker.min.js',
+      numberOfChannels: 1,
+      encoderSampleRate: 48000,
+      streamPages: false,
+    });
+
+    const chunks = [];
+    rec.ondataavailable = (ab) => chunks.push(ab);
+    rec.onstop = async () => {
+      finalBlob = new Blob(chunks, {type:'audio/ogg; codecs=opus'});
+      $('finalPreview').src = URL.createObjectURL(finalBlob);
+      $('finalPreview').style.display = 'block';
+      $('stitchStatus').textContent = 'Gotovo — audio spreman za slanje.';
+
+      const lead = leads.find(l => l.lead_id === activeId);
+      const filename = slugify(lead ? lead.naziv : 'poruka') + '.ogg';
+      $('downloadLink').href = URL.createObjectURL(finalBlob);
+      $('downloadLink').download = filename;
+      $('finalRow').style.display = 'flex';
+
+      // Upiši audio_ready u Sheet
+      if(lead && accessToken){
+        try{
+          await writeToSheet(activeId, {status: 'audio_ready'});
+          lead.status = 'audio_ready';
+          renderLeads();
+          toast('Status: audio_ready upisano u Sheet');
+        } catch(e){
+          toast('Sheet write greška: ' + e.message, 'err');
+        }
+      }
+    };
+
+    await rec.start();
+    src.start();
+    src.onended = () => rec.stop();
+
+  }catch(err){
+    console.error(err);
+    $('stitchStatus').textContent = 'Greška: ' + err.message;
+  }
+});
+
+// ─── OZNAČI POSLANO ────────────────────────────────────────────────────────
+$('markSentBtn').addEventListener('click', async () => {
+  const lead = leads.find(l => l.lead_id === activeId);
+  if(!lead) return;
+
+  if(accessToken){
+    try{
+      await writeToSheet(activeId, {
+        status: 'sent',
+        datum_poslano: nowTimestamp(),
+      });
+      lead.status = 'sent';
+      renderLeads();
+      toast('✓ Označeno kao poslano u Sheetu!');
+    } catch(e){
+      toast('Greška upisa: ' + e.message, 'err');
+    }
+  } else {
+    toast('Nije prijavljeno — Sheet nije ažuriran', 'err');
+  }
+});
+
+// ─── LOAD SHEET BUTTON ─────────────────────────────────────────────────────
+$('loadSheetBtn').addEventListener('click', loadLeadsFromSheet);
+
+$('clearContactsBtn').addEventListener('click', () => {
+  if(!confirm('Sigurno isprazniti lokalnu listu?')) return;
+  leads = [];
+  activeId = null;
+  $('noActive').style.display = 'block';
+  $('activeBox').style.display = 'none';
+  resetRecordingUI();
+  renderLeads();
+});
+
+// ─── URL PARAMS (deep link iz Sheet link kolone) ────────────────────────────
+function handleUrlParams(){
+  const params = new URLSearchParams(window.location.search);
+  const lead_id = params.get('lead_id');
+  const naziv   = params.get('naziv');
+  const vlasnik = params.get('vlasnik');
+  const opis    = params.get('opis');
+
+  if(!lead_id) return;
+
+  // Kreiraj privremeni lead objekt ako nije već učitan iz Sheeta
+  const existing = leads.find(l => l.lead_id === lead_id);
+  if(!existing){
+    leads.unshift({
+      lead_id,
+      naziv:   naziv   || '',
+      vlasnik: vlasnik || '',
+      opis:    opis    || '',
+      status:  'qualified',
+      claimed_by: '',
+      _rowIndex: null, // nepoznat — writeToSheet neće raditi dok se ne učita iz Sheeta
+    });
+    renderLeads();
+    toast(`Lead ${naziv} učitan iz linka. Klikni na njega za start.`);
+  }
+}
+
+// ─── INIT ──────────────────────────────────────────────────────────────────
+(async function init(){
+  // Učitaj pitch iz lokalne pohrane
+  await loadFixedFromStorage();
+
+  // Inicijaliziraj Google Sign-In
+  // GSI skripta je async — čekaj da se učita
+  const waitGSI = () => new Promise(res => {
+    if(typeof google !== 'undefined' && google.accounts) { res(); return; }
+    const t = setInterval(() => {
+      if(typeof google !== 'undefined' && google.accounts){ clearInterval(t); res(); }
+    }, 100);
+    // Timeout nakon 10s
+    setTimeout(() => { clearInterval(t); res(); }, 10000);
+  });
+
+  await waitGSI();
+
+  if(typeof google !== 'undefined' && google.accounts){
+    initGSI();
+    // Auto-login ako postoji hint
+    google.accounts.id.prompt(notification => {
+      if(notification.isNotDisplayed() || notification.isSkippedMoment()){
+        // Korisnik nije prijavljen — button je vidljiv
+      }
+    });
+  } else {
+    $('sheetsStatus').style.display = 'block';
+    $('sheetsStatus').className = 'sheets-status err';
+    $('sheetsStatus').textContent = 'Google Sign-In nije dostupan — provjeri OAUTH_CLIENT_ID.';
+  }
+
+  // Render prazne liste
+  renderLeads();
+
+  // Provjeri URL params (nakon što je lista prazna renderana)
+  handleUrlParams();
+})();
+
+})();
+</script>
+</body>
+</html>
