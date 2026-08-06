@@ -4,6 +4,12 @@ Pokreni: python -m scripts.verify.main
 
 Ulaz: redovi sa status='new'
 Izlaz: status → 'verified' / 'manual_review' / 'rejected'
+
+Kriteriji odbacivanja:
+  - Web-scan: detektiran webshop
+  - CW blokada
+  - CW prihodi eksplicitno 0 EUR
+Batch update na kraju runa (1 read_all + 1 batchUpdate, ne 1 po redu).
 """
 import logging
 import os
@@ -32,7 +38,6 @@ def run():
     log.info("=== Verify start ===")
     client = SheetsClient()
 
-    # Dohvati samo 'new' redove
     new_rows = client.read_by_status("new")
     log.info("Pronađeno %d 'new' redova za verifikaciju", len(new_rows))
 
@@ -41,6 +46,7 @@ def run():
         return
 
     limiter = RateLimiter(max_per_run=MAX_PER_RUN)
+    all_updates: list[dict] = []
     processed = 0
 
     with rate_limited_session(max_per_run=MAX_PER_RUN * 3) as (session, _):
@@ -53,11 +59,10 @@ def run():
             naziv = row.get("naziv_firme", "")
             log.info("[%s] Verificiram: %s", lead_id, naziv)
 
-            updates = {}
+            updates = {"lead_id": lead_id}
 
-            # --- Korak 1: Web-scan (ako ima web URL) ---
+            # --- Korak 1: Web-scan (samo ako ima pravi web URL, ne CW) ---
             web_url = row.get("web", "")
-            # Preskoči CW URL-ove iz collect faze
             if web_url and "companywall.hr" in web_url:
                 web_url = ""
 
@@ -66,8 +71,9 @@ def run():
                     scan_result = scan_website(session, web_url)
                     if scan_result["is_shop"]:
                         log.info("[%s] REJECTED (web-scan): %s", lead_id, scan_result["reason"])
-                        updates = {"status": "rejected", "opis": f"Odbačeno: {scan_result['reason']}"}
-                        client.update_row(lead_id, updates)
+                        updates["status"] = "rejected"
+                        updates["opis"] = f"Odbačeno: {scan_result['reason']}"
+                        all_updates.append(updates)
                         processed += 1
                         continue
                 except Exception as e:
@@ -101,19 +107,32 @@ def run():
                     log.warning("[%s] provjera.hr greška: %s", lead_id, e)
                     updates["status"] = "manual_review"
 
-                client.update_row(lead_id, updates)
+                all_updates.append(updates)
                 continue
 
             # --- Firma nađena na CW ---
-            # Provjeri blokadu
+
+            # Provjera 1: blokada
             if cw_data.get("cw_blocked"):
                 log.info("[%s] REJECTED (u blokadi): %s", lead_id, naziv)
-                updates = {
+                updates.update({
                     "oib": cw_data.get("oib", ""),
                     "status": "rejected",
                     "opis": "Odbačeno: firma u blokadi",
-                }
-                client.update_row(lead_id, updates)
+                })
+                all_updates.append(updates)
+                continue
+
+            # Provjera 2: prihodi == 0 EUR (eksplicitno)
+            prihod = cw_data.get("prihod")
+            if prihod is not None and prihod == 0:
+                log.info("[%s] REJECTED (prihodi 0 EUR): %s", lead_id, naziv)
+                updates.update({
+                    "oib": cw_data.get("oib", ""),
+                    "status": "rejected",
+                    "opis": "Odbačeno: prihodi 0 EUR",
+                })
+                all_updates.append(updates)
                 continue
 
             # Upiši CW podatke
@@ -125,15 +144,14 @@ def run():
                 "godina_osnutka": cw_data.get("godina_osnutka", ""),
             })
 
-            # Status: ima li mobitel?
+            # Status: verified ako ima kontakt, inače manual_review
             if cw_data.get("_has_mobile") or cw_data.get("telefon"):
                 updates["status"] = "verified"
             else:
-                # Nema mobitela — manual_review (ne odbacuje se)
                 log.info("[%s] manual_review (nema mobitela): %s", lead_id, naziv)
                 updates["status"] = "manual_review"
 
-            # --- Korak 3: Opis (Claude API) — samo za verified ---
+            # --- Korak 3: Opis (Claude API) — samo za verified s web-om ---
             if updates.get("status") == "verified" and web_url:
                 try:
                     web_text = extract_homepage_text(session, web_url)
@@ -144,8 +162,16 @@ def run():
                 except Exception as e:
                     log.warning("[%s] opis greška: %s", lead_id, e)
 
-            client.update_row(lead_id, updates)
             log.info("[%s] → status: %s", lead_id, updates.get("status"))
+            all_updates.append(updates)
+
+    # --- Batch write svih promjena ---
+    if all_updates:
+        log.info("Batch update: %d redova...", len(all_updates))
+        try:
+            client.batch_update(all_updates)
+        except Exception as e:
+            log.error("Batch update greška: %s", e)
 
     log.info("=== Verify završen: %d obrađenih redova ===", processed)
 

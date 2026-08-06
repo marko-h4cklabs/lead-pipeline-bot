@@ -82,13 +82,50 @@ def _extract_employees(soup: BeautifulSoup) -> str:
         if "Broj zaposlenih" in row.get_text():
             cells = [td.get_text(strip=True) for td in row.find_all("td") if td.get_text(strip=True)]
             if len(cells) >= 2:
-                # zadnji cell je najnovija godina
                 raw = cells[-1].replace(",", ".").strip()
                 try:
                     return str(int(float(raw)))
                 except ValueError:
                     return raw
     return ""
+
+
+def _parse_hr_number(raw: str) -> Optional[int]:
+    """
+    Parsira HR broj format: '1.234.567,00' → 1234567, '0,00' → 0.
+    Vraća None ako parsing ne uspije ili string je '-'/'–'/prazan.
+    """
+    raw = raw.strip()
+    if not raw or raw in ("-", "–", "N/A", "n/a"):
+        return None
+    # Ukloni tisućice separatore (točke u HR formatu), zamijeni decimalni zarez s točkom
+    cleaned = raw.replace(".", "").replace(",", ".")
+    # Uzmi samo znamenke i decimalnu točku
+    cleaned = re.sub(r"[^\d.]", "", cleaned)
+    if not cleaned:
+        return None
+    try:
+        return int(float(cleaned))
+    except ValueError:
+        return None
+
+
+def _extract_revenue(soup: BeautifulSoup) -> Optional[int]:
+    """
+    Vraća zadnji dostupni godišnji prihod (Ukupni prihodi) u EUR/HRK.
+    Returns None ako podaci nisu dostupni na stranici.
+    Returns 0 ako je eksplicitno 0 (firma bez prihoda).
+    """
+    keywords = ("Ukupni prihodi", "Prihodi od prodaje", "Prihodi")
+    for row in soup.find_all("tr"):
+        row_text = row.get_text()
+        if any(kw in row_text for kw in keywords) and "rashodi" not in row_text.lower():
+            cells = [td.get_text(strip=True) for td in row.find_all("td")]
+            # Zadrži samo neprazne ćelije (preskači "-" i prazne)
+            non_empty = [c for c in cells if c and c not in ("-", "–")]
+            if non_empty:
+                return _parse_hr_number(non_empty[-1])
+    return None
 
 
 def _extract_year(date_str: str) -> str:
@@ -123,6 +160,7 @@ def _parse_detail_page(html: str) -> dict:
     telefon, _ = _extract_phones(soup)
     employees = _extract_employees(soup)
     blocked = _is_blocked(dt_map, soup)
+    prihod = _extract_revenue(soup)
 
     # Status badge
     status_badge = soup.select_one(".badge-success, .badge-danger, .badge-warning")
@@ -134,6 +172,7 @@ def _parse_detail_page(html: str) -> dict:
         "telefon": telefon,
         "godina_osnutka": godina,
         "broj_zaposlenih": employees,
+        "prihod": prihod,          # int u EUR/HRK, None = nije dostupno
         "cw_blocked": blocked,
         "cw_active": is_active,
         "_has_mobile": bool(telefon and _is_mobile(telefon)),

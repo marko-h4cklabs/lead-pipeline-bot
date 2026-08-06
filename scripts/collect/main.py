@@ -82,17 +82,21 @@ def run():
                 continue
             seen_cw_urls.add(cw_url)
 
-            # CompanyWall u collect fazi — nemamo OIB/tel pa koristimo samo naziv za dedupe
+            # Postavi web na CW URL PRIJE dedupe — bez toga name+domain check ne radi
+            # (cw_url je jedinstven po firmi, pa "companywall.hr" + naziv = dobar ključ)
+            if not item.get("web"):
+                item["web"] = cw_url
+
+            # CompanyWall u collect fazi — nemamo OIB/tel pa koristimo naziv+cw_url za dedupe
             is_dup, reason = checker.is_duplicate(item)
             if is_dup:
                 log.debug("CW duplikat: %s (%s)", item.get("naziv_firme"), reason)
                 continue
 
             lid = new_lead_id()
-            # Spremi cw_url kao privremeni web placeholder (overwritat će se u Dio 2)
             item.update({
                 "lead_id": lid,
-                "web": item.get("web") or cw_url,  # koristimo CW URL kao privremeni web
+                "web": item.get("web") or cw_url,  # web je već postavljen gore
                 "status": "new",
                 "datum_dodan": datetime.now().strftime("%Y-%m-%d"),
                 "link": make_link(lid, item.get("naziv_firme", "")),
