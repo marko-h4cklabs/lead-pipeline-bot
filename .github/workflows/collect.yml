@@ -37,6 +37,6 @@ jobs:
         env:
           GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
-          GITHUB_PAGES_BASE: ${{ vars.GITHUB_PAGES_BASE }}
+          GITHUB_PAGES_BASE: ${{ vars.PAGES_BASE_URL }}
           MAX_NEW_PER_RUN: ${{ inputs.max_new }}
         run: python -m scripts.collect.main
