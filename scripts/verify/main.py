@@ -186,7 +186,55 @@ def run():
         except Exception as e:
             log.error("Batch update greška: %s", e)
 
+    # --- Sekundarni OIB dedupe ---
+    # Collect nema OIB pa isti OIB može doći iz Places i CW odvojeno.
+    # Ovaj pass se pokreće NAKON verify (koji upisuje OIB) da uhvati takve duplikate.
+    _dedup_by_oib(client)
+
     log.info("=== Verify završen: %d obrađenih redova ===", processed)
+
+
+def _dedup_by_oib(client) -> None:
+    """
+    Sekundarni dedupe po OIB-u — pokreće se nakon verify jer collect nema OIB.
+    Za svaki OIB s ≥2 reda: zadržava najraniji (najmanji _row), ostale odbacuje.
+    Preskače redove koji su već 'rejected'.
+    """
+    from collections import defaultdict
+    all_rows = client.read_all()
+    oib_groups: dict[str, list] = defaultdict(list)
+    for row in all_rows:
+        oib = row.get("oib", "").strip().lstrip("'")  # makni apostrofni prefix ako postoji
+        if oib and len(oib) >= 8:  # OIB je 11 znakova, ignoriramo kratke/prazne
+            oib_groups[oib].append(row)
+
+    dedup_updates = []
+    for oib, group in oib_groups.items():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda r: r["_row"])
+        keep = group[0]
+        for dup in group[1:]:
+            if dup.get("status") == "rejected":
+                continue
+            log.info(
+                "OIB duplikat %s: zadržavam row %d (%s), odbacujem row %d (%s)",
+                oib, keep["_row"], keep.get("lead_id"), dup["_row"], dup.get("lead_id"),
+            )
+            dedup_updates.append({
+                "lead_id": dup["lead_id"],
+                "status": "rejected",
+                "opis": f"Duplikat OIB {oib} (zadržan: {keep.get('lead_id', '?')})",
+            })
+
+    if dedup_updates:
+        log.info("OIB dedupe: odbacujem %d duplikata", len(dedup_updates))
+        try:
+            client.batch_update(dedup_updates)
+        except Exception as e:
+            log.error("OIB dedupe batch_update greška: %s", e)
+    else:
+        log.info("OIB dedupe: nema duplikata")
 
 
 if __name__ == "__main__":

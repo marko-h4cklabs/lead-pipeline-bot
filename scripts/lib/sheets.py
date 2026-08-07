@@ -46,6 +46,21 @@ COLUMNS = [
 COL_INDEX = {name: i for i, name in enumerate(COLUMNS)}
 SHEET_NAME = "Leads"  # naziv tab-a u Sheetu
 
+# Stupci gdje vodeće nule moraju biti sačuvane — Sheets s USER_ENTERED bi ih uklonio
+_TEXT_COLUMNS = {"oib", "telefon"}
+
+
+def _to_sheet_value(col: str, val) -> str:
+    """
+    Serializira vrijednost za upis u Sheet s USER_ENTERED mode-om.
+    OIB i telefon dobivaju apostrofni prefix (') koji signalizira Sheetsu
+    da pohrani vrijednost kao tekst (apostrof se ne prikazuje u ćeliji).
+    """
+    s = str(val) if val is not None else ""
+    if col in _TEXT_COLUMNS and s:
+        return "'" + s
+    return s
+
 
 def _get_service():
     # ADC: radi u GitHub Actions (WIF) i lokalno (gcloud ADC ili GOOGLE_APPLICATION_CREDENTIALS)
@@ -126,7 +141,7 @@ class SheetsClient:
         existing = result.get("values", [])
         next_row = len(existing) + 1  # 1-based; pišemo iza zadnjeg reda s podacima
 
-        values = [[data.get(col, "") for col in COLUMNS] for data in rows]
+        values = [[_to_sheet_value(col, data.get(col, "")) for col in COLUMNS] for data in rows]
         # Samo start cell — API sam izračuna kraj iz dimenzija matrice.
         # Eksplicitni end column (npr. :Q) uzrokuje pomak desno jer API
         # tretira end column kao sidro umjesto granice.
@@ -160,7 +175,7 @@ class SheetsClient:
         for key, val in updates.items():
             if key in COL_INDEX:
                 row_data[key] = val
-        new_row = [row_data.get(col, "") for col in COLUMNS]
+        new_row = [_to_sheet_value(col, row_data.get(col, "")) for col in COLUMNS]
         body = {"values": [new_row]}
         self._svc.spreadsheets().values().update(
             spreadsheetId=self._sid,
@@ -188,7 +203,7 @@ class SheetsClient:
             for key, val in upd.items():
                 if key in COL_INDEX and key != "lead_id":
                     row_data[key] = val
-            new_row = [row_data.get(col, "") for col in COLUMNS]
+            new_row = [_to_sheet_value(col, row_data.get(col, "")) for col in COLUMNS]
             data.append({
                 "range": self._range(row_num),
                 "values": [new_row],
