@@ -58,7 +58,9 @@ def run():
         log.info("Nema novih redova — završeno.")
         return
 
-    limiter = RateLimiter(max_per_run=MAX_PER_RUN)
+    # CW limiter mjeri HTTP zahtjeve prema CW-u, ne broj firmi.
+    # Svaka firma radi 1-2 CW zahtjeva; daj 4× buffer da nikad ne bude usko grlo.
+    limiter = RateLimiter(max_per_run=MAX_PER_RUN * 4)
     all_updates: list[dict] = []
     processed = 0
 
@@ -181,19 +183,23 @@ def run():
     # --- Batch write svih promjena ---
     if all_updates:
         log.info("Batch update: %d redova...", len(all_updates))
-        try:
-            client.batch_update(all_updates)
-        except Exception as e:
-            # SSL/connection greška nakon dugog runa — rebuild klijenta i retry jednom.
-            # SheetsClient drži http konekciju koja može pasti (keepalive timeout, stale token).
-            log.warning("Batch update greška — rebuild Sheets klijenta i retry: %s", e)
+        _last_err = None
+        for _attempt in range(3):
             try:
-                client = SheetsClient()
+                if _attempt > 0:
+                    # Rebuild klijenta — svježi HTTP socket i token refresh.
+                    # SSL/keepalive timeout može pasti nakon dugog runa.
+                    log.info("Batch update retry %d/2 — rebuild Sheets klijenta...", _attempt)
+                    client = SheetsClient()
                 client.batch_update(all_updates)
-                log.info("Batch update retry uspješan.")
-            except Exception as e2:
-                log.error("Batch update retry greška — podaci NISU upisani: %s", e2)
-                return  # ne nastavljaj s dedupom, Sheet nije ažuriran
+                _last_err = None
+                break
+            except Exception as e:
+                _last_err = e
+                log.warning("Batch update pokušaj %d/3 greška: %s", _attempt + 1, e)
+        if _last_err:
+            log.error("Batch update neuspješan nakon 3 pokušaja — podaci NISU upisani: %s", _last_err)
+            return  # ne nastavljaj s dedupom, Sheet nije ažuriran
 
     # --- Sekundarni OIB dedupe ---
     # Collect nema OIB pa isti OIB može doći iz Places i CW odvojeno.
