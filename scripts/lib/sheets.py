@@ -47,7 +47,7 @@ COL_INDEX = {name: i for i, name in enumerate(COLUMNS)}
 SHEET_NAME = "Leads"  # naziv tab-a u Sheetu
 
 # Stupci gdje vodeće nule moraju biti sačuvane — Sheets s USER_ENTERED bi ih uklonio
-_TEXT_COLUMNS = {"oib", "telefon"}
+_TEXT_COLUMNS = {"lead_id", "oib", "telefon"}
 
 
 def _to_sheet_value(col: str, val) -> str:
