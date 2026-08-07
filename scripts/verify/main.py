@@ -184,7 +184,16 @@ def run():
         try:
             client.batch_update(all_updates)
         except Exception as e:
-            log.error("Batch update greška: %s", e)
+            # SSL/connection greška nakon dugog runa — rebuild klijenta i retry jednom.
+            # SheetsClient drži http konekciju koja može pasti (keepalive timeout, stale token).
+            log.warning("Batch update greška — rebuild Sheets klijenta i retry: %s", e)
+            try:
+                client = SheetsClient()
+                client.batch_update(all_updates)
+                log.info("Batch update retry uspješan.")
+            except Exception as e2:
+                log.error("Batch update retry greška — podaci NISU upisani: %s", e2)
+                return  # ne nastavljaj s dedupom, Sheet nije ažuriran
 
     # --- Sekundarni OIB dedupe ---
     # Collect nema OIB pa isti OIB može doći iz Places i CW odvojeno.
