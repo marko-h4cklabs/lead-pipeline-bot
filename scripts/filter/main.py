@@ -3,7 +3,7 @@ Dio 3 — Filtering
 Pokreni: python -m scripts.filter.main
 
 Ulaz: redovi sa status='verified'
-Kriterij: min. 5 zaposlenih, min. 2 godine poslovanja
+Kriterij: min. 5 zaposlenih, min. 3 godine poslovanja (podesivo env varijablama)
 Izlaz: status → 'qualified' ili 'filtered_out'
 """
 import logging
@@ -23,7 +23,7 @@ logging.basicConfig(
 log = logging.getLogger("filter")
 
 MIN_EMPLOYEES = int(os.environ.get("MIN_EMPLOYEES", "5"))
-MIN_YEARS = int(os.environ.get("MIN_YEARS", "2"))
+MIN_YEARS = int(os.environ.get("MIN_YEARS", "3"))
 CURRENT_YEAR = datetime.now().year
 
 
@@ -58,8 +58,7 @@ def evaluate(row: dict) -> tuple[str, str]:
     reasons = []
 
     if employees is None:
-        # Nepoznat broj zaposlenih — ne odbacujemo, preskačemo filtriranje
-        return "qualified", "broj_zaposlenih_nepoznat"
+        return "manual_review", "broj_zaposlenih_nepoznat"
 
     if employees < MIN_EMPLOYEES:
         reasons.append(f"premalo_zaposlenih:{employees}<{MIN_EMPLOYEES}")
