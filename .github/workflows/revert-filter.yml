@@ -1,23 +1,14 @@
-name: Filter Leads
+name: Revert Filter
 
 on:
   workflow_dispatch:
-    inputs:
-      min_employees:
-        description: "Min broj zaposlenih (default: 5)"
-        required: false
-        default: "5"
-      min_years:
-        description: "Min godina poslovanja (default: 3)"
-        required: false
-        default: "3"
 
 permissions:
   contents: read
-  id-token: write   # potrebno za Workload Identity Federation OIDC token
+  id-token: write
 
 jobs:
-  filter:
+  revert:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -37,9 +28,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run filter
+      - name: Revert qualified/filtered_out → verified
         env:
           GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
-          MIN_EMPLOYEES: ${{ inputs.min_employees }}
-          MIN_YEARS: ${{ inputs.min_years }}
-        run: python -m scripts.filter.main
+        run: python -m scripts.revert_filter
