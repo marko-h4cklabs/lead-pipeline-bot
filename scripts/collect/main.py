@@ -81,6 +81,7 @@ def run():
             "status": "new",
             "datum_dodan": datetime.now().strftime("%Y-%m-%d"),
             "link": make_link(lid, lead.get("naziv_firme", "")),
+            "obradjen_flag": "NE",
         })
         new_leads.append(lead)
         checker.register(lead)
@@ -124,6 +125,7 @@ def run():
                 "status": "new",
                 "datum_dodan": datetime.now().strftime("%Y-%m-%d"),
                 "link": make_link(lid, item.get("naziv_firme", "")),
+                "obradjen_flag": "NE",
             })
             new_leads.append(item)
             checker.register(item)
