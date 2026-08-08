@@ -7,6 +7,14 @@ on:
         description: "Max verifikacija po runu (default: 80)"
         required: false
         default: "80"
+      min_revenue_eur:
+        description: "Minimalni prihodi u EUR (default: 0 — odbaci samo 0 EUR)"
+        required: false
+        default: "0"
+      max_revenue_eur:
+        description: "Maksimalni prihodi u EUR (prazno = bez gornje granice)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -38,4 +46,6 @@ jobs:
           GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MAX_VERIFY_PER_RUN: ${{ inputs.max_verify }}
+          MIN_REVENUE_EUR: ${{ inputs.min_revenue_eur }}
+          MAX_REVENUE_EUR: ${{ inputs.max_revenue_eur }}
         run: python -m scripts.verify.main

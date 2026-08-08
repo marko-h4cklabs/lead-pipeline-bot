@@ -148,17 +148,29 @@ def search_places(
     return results
 
 
-def iter_all_searches(delay_between_queries: float = 2.0) -> Iterator[dict]:
+def iter_all_searches(
+    delay_between_queries: float = 2.0,
+    queries: list[str] | None = None,
+    excluded_counties: set[str] | None = None,
+) -> Iterator[dict]:
     """
-    Prolazi kroz sve kombinacije niša, vraća lead dict-ove jedan po jedan.
-    Namjerno ne prolazi po svim županijama — Places API već filtrira po regionCode=HR
-    i vraća rezultate iz cijele države. Ako treba finiji targeting, dodaj location bias.
+    Prolazi kroz nišne upite, vraća lead dict-ove jedan po jedan.
+
+    queries: lista upita; None = koristi default NISE_QUERIES
+    excluded_counties: set imena županija za preskočiti (partial match, case-insensitive)
+                      Napomena: filter radi samo za Places (vraća zupanija);
+                      CW collect faza nema county podatak.
     """
+    q_list = queries if queries is not None else NISE_QUERIES
     seen_place_ids: set[str] = set()
-    for query in NISE_QUERIES:
+    for query in q_list:
         results = search_places(query)
         for r in results:
-            # interni Places ID za intra-batch dedupe
+            if excluded_counties:
+                zupanija = r.get("zupanija", "")
+                if any(exc.lower() in zupanija.lower() for exc in excluded_counties):
+                    log.debug("Places skip (isključena županija '%s'): %s", zupanija, r.get("naziv_firme"))
+                    continue
             pid = r.get("_place_id", "")
             if pid and pid in seen_place_ids:
                 continue

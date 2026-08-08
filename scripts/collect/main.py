@@ -29,6 +29,11 @@ log = logging.getLogger("collect")
 GITHUB_PAGES_BASE = os.environ.get("GITHUB_PAGES_BASE", "https://YOUR_USERNAME.github.io/YOUR_REPO/")
 MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "80"))
 
+# Opcionalni parametri — prazno znači "koristi default"
+NICHE_QUERY = os.environ.get("NICHE_QUERY", "").strip()
+_exc_raw = os.environ.get("EXCLUDED_COUNTIES", "Međimurska,Varaždinska").strip()
+EXCLUDED_COUNTIES: set[str] = {c.strip() for c in _exc_raw.split(",") if c.strip()}
+
 
 def make_link(lead_id: str, naziv: str, vlasnik: str = "", opis: str = "") -> str:
     from urllib.parse import urlencode
@@ -52,10 +57,18 @@ def run():
     cw_limit = MAX_NEW_PER_RUN - places_limit
     log.info("Kvote: Places=%d, CompanyWall=%d", places_limit, cw_limit)
 
+    # --- Parametri logiranje ---
+    if NICHE_QUERY:
+        log.info("NICHE_QUERY: %r (overrideava default liste)", NICHE_QUERY)
+    else:
+        log.info("NICHE_QUERY: prazno — koriste se default niše")
+    log.info("EXCLUDED_COUNTIES: %s", EXCLUDED_COUNTIES or "(bez filtera)")
+
     # --- Izvor 1: Google Places ---
     log.info("Google Places: pokretanje...")
+    places_queries = [NICHE_QUERY] if NICHE_QUERY else None
     places_count = 0
-    for lead in iter_all_searches():
+    for lead in iter_all_searches(queries=places_queries, excluded_counties=EXCLUDED_COUNTIES):
         if places_count >= places_limit:
             break
         is_dup, reason = checker.is_duplicate(lead)
@@ -76,8 +89,11 @@ def run():
 
     # --- Izvor 2: CompanyWall search ---
     log.info("CompanyWall: pokretanje...")
+    if EXCLUDED_COUNTIES:
+        log.info("Napomena: CW county filter nije dostupan u collect fazi — nema zupanija podatka pri searchu.")
+    cw_queries = [NICHE_QUERY] if NICHE_QUERY else NISE_QUERIES
     cw_count = 0
-    for query in NISE_QUERIES:
+    for query in cw_queries:
         if cw_count >= cw_limit:
             break
         for item in search_companywall(query, max_pages=2):
@@ -119,16 +135,6 @@ def run():
 
     # --- Upis u Sheet (batch — jedan API poziv za sve redove) ---
     log.info("Upisujem %d novih leadova u Sheet...", len(new_leads))
-
-    # DEBUG: provjeri sadržaj prvog reda PRIJE batch_append
-    from scripts.lib.sheets import COLUMNS as _COLS
-    _first = new_leads[0]
-    _row0 = [_first.get(col, "__MISSING__") for col in _COLS]
-    log.info("DEBUG values[0] keys u leadu: %s", list(_first.keys()))
-    log.info("DEBUG values[0] (%d elemenata): %s", len(_row0), _row0)
-    log.info("DEBUG lead_id na poziciji 0: %r", _row0[0])
-    log.info("DEBUG link na poziciji 16: %r", _row0[16])
-
     try:
         client.batch_append(new_leads)
     except Exception as e:

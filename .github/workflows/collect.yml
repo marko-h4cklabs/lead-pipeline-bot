@@ -7,6 +7,14 @@ on:
         description: "Max novih leadova po runu (default: 80)"
         required: false
         default: "80"
+      niche_query:
+        description: "Nišni search term (npr. 'vodoinstalater'). Prazno = sve default niše."
+        required: false
+        default: ""
+      excluded_counties:
+        description: "Zarezom odvojene županije za isključiti (default: Međimurska,Varaždinska)"
+        required: false
+        default: "Međimurska,Varaždinska"
 
 permissions:
   contents: read
@@ -45,4 +53,6 @@ jobs:
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
           GITHUB_PAGES_BASE: ${{ vars.PAGES_BASE_URL }}
           MAX_NEW_PER_RUN: ${{ inputs.max_new }}
+          NICHE_QUERY: ${{ inputs.niche_query }}
+          EXCLUDED_COUNTIES: ${{ inputs.excluded_counties }}
         run: python -m scripts.collect.main

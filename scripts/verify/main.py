@@ -32,6 +32,9 @@ logging.basicConfig(
 log = logging.getLogger("verify")
 
 MAX_PER_RUN = int(os.environ.get("MAX_VERIFY_PER_RUN", "80"))
+MIN_REVENUE_EUR = int(os.environ.get("MIN_REVENUE_EUR", "0"))
+_max_rev_raw = os.environ.get("MAX_REVENUE_EUR", "").strip()
+MAX_REVENUE_EUR: int | None = int(_max_rev_raw) if _max_rev_raw else None
 
 
 def run():
@@ -138,17 +141,27 @@ def run():
                 all_updates.append(updates)
                 continue
 
-            # Provjera 2: prihodi == 0 EUR (eksplicitno)
+            # Provjera 2: prihodi — raspon [MIN_REVENUE_EUR, MAX_REVENUE_EUR]
             prihod = cw_data.get("prihod")
-            if prihod is not None and prihod == 0:
-                log.info("[%s] REJECTED (prihodi 0 EUR): %s", lead_id, naziv)
-                updates.update({
-                    "oib": cw_data.get("oib", ""),
-                    "status": "rejected",
-                    "opis": "Odbačeno: prihodi 0 EUR",
-                })
-                all_updates.append(updates)
-                continue
+            if prihod is not None:
+                if prihod < MIN_REVENUE_EUR:
+                    log.info("[%s] REJECTED (prihodi %d < min %d EUR): %s", lead_id, prihod, MIN_REVENUE_EUR, naziv)
+                    updates.update({
+                        "oib": cw_data.get("oib", ""),
+                        "status": "rejected",
+                        "opis": f"Odbačeno: prihodi {prihod} EUR < min {MIN_REVENUE_EUR} EUR",
+                    })
+                    all_updates.append(updates)
+                    continue
+                if MAX_REVENUE_EUR is not None and prihod > MAX_REVENUE_EUR:
+                    log.info("[%s] REJECTED (prihodi %d > max %d EUR): %s", lead_id, prihod, MAX_REVENUE_EUR, naziv)
+                    updates.update({
+                        "oib": cw_data.get("oib", ""),
+                        "status": "rejected",
+                        "opis": f"Odbačeno: prihodi {prihod} EUR > max {MAX_REVENUE_EUR} EUR",
+                    })
+                    all_updates.append(updates)
+                    continue
 
             # Upiši CW podatke
             updates.update({
