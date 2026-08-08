@@ -51,11 +51,10 @@ def run():
     new_leads = []
     seen_cw_urls: set[str] = set()
 
-    # Svaki izvor dobiva vlastitu kvotu — Places pola, CW pola.
-    # (ostatak pri neparnom broju ide CW-u)
-    places_limit = MAX_NEW_PER_RUN // 2
-    cw_limit = MAX_NEW_PER_RUN - places_limit
-    log.info("Kvote: Places=%d, CompanyWall=%d", places_limit, cw_limit)
+    # Spillover kvote: Places dobiva soft cap (pola max_new). CW limit
+    # se računa NAKON Places-a — uzima neiskorištenu kvotu automatski.
+    # Primjer: max_new=80, Places nađe 4 → CW dobiva 76 umjesto 40.
+    places_soft_cap = MAX_NEW_PER_RUN // 2
 
     # --- Parametri logiranje ---
     if NICHE_QUERY:
@@ -63,13 +62,14 @@ def run():
     else:
         log.info("NICHE_QUERY: prazno — koriste se default niše")
     log.info("EXCLUDED_COUNTIES: %s", EXCLUDED_COUNTIES or "(bez filtera)")
+    log.info("Kvota: max=%d, Places soft cap=%d (spillover → CW)", MAX_NEW_PER_RUN, places_soft_cap)
 
     # --- Izvor 1: Google Places ---
     log.info("Google Places: pokretanje...")
     places_queries = [NICHE_QUERY] if NICHE_QUERY else None
     places_count = 0
     for lead in iter_all_searches(queries=places_queries, excluded_counties=EXCLUDED_COUNTIES):
-        if places_count >= places_limit:
+        if places_count >= places_soft_cap:
             break
         is_dup, reason = checker.is_duplicate(lead)
         if is_dup:
@@ -85,10 +85,12 @@ def run():
         new_leads.append(lead)
         checker.register(lead)
         places_count += 1
-    log.info("Places: %d novih leadova", places_count)
+    log.info("Places: %d novih leadova (soft cap: %d)", places_count, places_soft_cap)
 
     # --- Izvor 2: CompanyWall search ---
-    log.info("CompanyWall: pokretanje...")
+    # Spillover: CW dobiva sve što Places nije iskoristio od svog soft capa.
+    cw_limit = MAX_NEW_PER_RUN - places_count
+    log.info("CompanyWall: pokretanje (kvota: %d)...", cw_limit)
     if EXCLUDED_COUNTIES:
         log.info("Napomena: CW county filter nije dostupan u collect fazi — nema zupanija podatka pri searchu.")
     cw_queries = [NICHE_QUERY] if NICHE_QUERY else NISE_QUERIES
