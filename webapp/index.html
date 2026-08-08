@@ -703,7 +703,7 @@ $('stitchBtn').addEventListener('click', async () => {
       $('stitchStatus').textContent = 'Gotovo — audio spreman za slanje.';
 
       const lead = leads.find(l => l.lead_id === activeId);
-      const filename = slugify(lead ? lead.naziv : 'poruka') + '.ogg';
+      const filename = slugify(lead ? lead.naziv : 'poruka') + '.oga';
       $('downloadLink').href = URL.createObjectURL(finalBlob);
       $('downloadLink').download = filename;
       $('finalRow').style.display = 'flex';
