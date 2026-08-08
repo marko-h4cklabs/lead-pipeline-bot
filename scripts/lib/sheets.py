@@ -22,25 +22,26 @@ log = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# Redoslijed kolona mora odgovarati Sheet shemi (od A do Q)
+# Redoslijed kolona mora odgovarati Sheet shemi (od A do R)
 COLUMNS = [
-    "lead_id",
-    "naziv_firme",
-    "oib",
-    "vlasnik",
-    "telefon",
-    "web",
-    "grad",
-    "zupanija",
-    "opis",
-    "broj_zaposlenih",
-    "godina_osnutka",
-    "izvor",
-    "status",
-    "claimed_by",
-    "datum_dodan",
-    "datum_poslano",
-    "link",
+    "lead_id",        # A
+    "naziv_firme",    # B
+    "oib",            # C
+    "vlasnik",        # D
+    "telefon",        # E
+    "web",            # F
+    "grad",           # G
+    "zupanija",       # H
+    "opis",           # I
+    "broj_zaposlenih",# J
+    "godina_osnutka", # K
+    "izvor",          # L
+    "status",         # M
+    "claimed_by",     # N
+    "datum_dodan",    # O
+    "datum_poslano",  # P
+    "link",           # Q
+    "obradjen_flag",  # R — NE/DA; DA = audio kreiran u Voice Stitcheru
 ]
 
 COL_INDEX = {name: i for i, name in enumerate(COLUMNS)}
@@ -82,10 +83,13 @@ class SheetsClient:
     def __init__(self):
         self._svc = _get_service()
         self._sid = _sheet_id()
-        self._sheet_ref = f"'{SHEET_NAME}'!A:Q"
+        # Dinamički iz COLUMNS — automatski ispravno pri dodavanju novih kolona
+        _last_col = chr(ord('A') + len(COLUMNS) - 1)
+        self._sheet_ref = f"'{SHEET_NAME}'!A:{_last_col}"
 
     def _range(self, row_number: int) -> str:
-        return f"'{SHEET_NAME}'!A{row_number}:Q{row_number}"
+        last_col = chr(ord('A') + len(COLUMNS) - 1)
+        return f"'{SHEET_NAME}'!A{row_number}:{last_col}{row_number}"
 
     def read_all(self) -> list[dict]:
         """Vraća sve redove kao list of dict (bez header reda)."""

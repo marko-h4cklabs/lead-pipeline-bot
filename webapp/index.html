@@ -216,6 +216,7 @@ const COL = {
   datum_dodan:    14,
   datum_poslano:  15,
   link:           16,
+  obradjen_flag:  17, // R — DA kad je audio kreiran u Voice Stitcheru
 };
 
 // ─── STATE ─────────────────────────────────────────────────────────────────
@@ -384,22 +385,23 @@ async function loadLeadsFromSheet(){
   sheetsStatus('Učitavam leadove iz Sheeta...', 'info');
   try{
     const data = await sheetsRequest('GET',
-      `/values/'${SHEET_TAB}'!A:Q`
+      `/values/'${SHEET_TAB}'!A:R`
     );
     const rows = data.values || [];
     if(rows.length < 2){ sheetsStatus('Sheet je prazan.', 'info'); return; }
 
-    // Filtriraj samo 'qualified' i neobrađene (ne sent, ne in_progress od drugog)
+    // Filtriraj samo 'qualified' — filter NAKON map-a da _rowIndex odgovara pravom Sheet redu
     leads = rows.slice(1)
       .map((r, i) => ({
-        lead_id:    r[COL.lead_id]     || '',
-        naziv:      r[COL.naziv_firme] || '',
-        vlasnik:    r[COL.vlasnik]     || '',
-        opis:       r[COL.opis]        || '',
-        telefon:    r[COL.telefon]     || '',
-        status:     r[COL.status]      || '',
-        claimed_by: r[COL.claimed_by]  || '',
-        _rowIndex:  i + 2, // filter je NAKON map-a da i odgovara pravom Sheet redu
+        lead_id:       r[COL.lead_id]       || '',
+        naziv:         r[COL.naziv_firme]   || '',
+        vlasnik:       r[COL.vlasnik]       || '',
+        opis:          r[COL.opis]          || '',
+        telefon:       r[COL.telefon]       || '',
+        status:        r[COL.status]        || '',
+        claimed_by:    r[COL.claimed_by]    || '',
+        obradjen_flag: r[COL.obradjen_flag] || '',
+        _rowIndex:     i + 2,
       }))
       .filter(l => l.status === 'qualified');
 
@@ -412,18 +414,19 @@ async function loadLeadsFromSheet(){
 }
 
 async function lookupRowByLeadId(lead_id){
-  const data = await sheetsRequest('GET', `/values/'${SHEET_TAB}'!A:Q`);
+  const data = await sheetsRequest('GET', `/values/'${SHEET_TAB}'!A:R`);
   const rows = data.values || [];
   for(let i = 1; i < rows.length; i++){
     const r = rows[i];
     if((r[COL.lead_id] || '') === lead_id){
       return {
-        rowIndex:   i + 1, // 1-indexed; i=0 je header pa i=1 → Sheet row 2
-        status:     r[COL.status]     || '',
-        vlasnik:    r[COL.vlasnik]    || '',
-        opis:       r[COL.opis]       || '',
-        telefon:    r[COL.telefon]    || '',
-        claimed_by: r[COL.claimed_by] || '',
+        rowIndex:      i + 1, // 1-indexed; i=0 je header pa i=1 → Sheet row 2
+        status:        r[COL.status]        || '',
+        vlasnik:       r[COL.vlasnik]       || '',
+        opis:          r[COL.opis]          || '',
+        telefon:       r[COL.telefon]       || '',
+        claimed_by:    r[COL.claimed_by]    || '',
+        obradjen_flag: r[COL.obradjen_flag] || '',
       };
     }
   }
@@ -442,17 +445,17 @@ async function writeToSheet(lead_id, updates){
   // Dohvati cijeli red
   try{
     const data = await sheetsRequest('GET',
-      `/values/'${SHEET_TAB}'!A${rowIdx}:Q${rowIdx}`
+      `/values/'${SHEET_TAB}'!A${rowIdx}:R${rowIdx}`
     );
     const row = (data.values || [[]])[0] || [];
-    // Dopuni do Q (17 stupaca)
-    while(row.length < 17) row.push('');
+    // Dopuni do R (18 stupaca)
+    while(row.length < 18) row.push('');
     // Primijeni updates
     for(const [key, val] of Object.entries(updates)){
       if(COL[key] !== undefined) row[COL[key]] = val;
     }
     await sheetsRequest('PUT',
-      `/values/'${SHEET_TAB}'!A${rowIdx}:Q${rowIdx}?valueInputOption=USER_ENTERED`,
+      `/values/'${SHEET_TAB}'!A${rowIdx}:R${rowIdx}?valueInputOption=USER_ENTERED`,
       { values: [row] }
     );
     // Ažuriraj lokalni state
@@ -708,11 +711,12 @@ $('stitchBtn').addEventListener('click', async () => {
       $('downloadLink').download = filename;
       $('finalRow').style.display = 'flex';
 
-      // Upiši audio_ready u Sheet
+      // Upiši audio_ready + obradjen_flag=DA u Sheet
       if(lead && accessToken){
         try{
-          await writeToSheet(activeId, {status: 'audio_ready'});
+          await writeToSheet(activeId, {status: 'audio_ready', obradjen_flag: 'DA'});
           lead.status = 'audio_ready';
+          lead.obradjen_flag = 'DA';
           renderLeads();
           toast('Status: audio_ready upisano u Sheet');
         } catch(e){

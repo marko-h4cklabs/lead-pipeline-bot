@@ -43,15 +43,16 @@ def run():
     svc.spreadsheets().values().clear(spreadsheetId=sid, range=clear_range, body={}).execute()
     log.info("Obrisani svi podaci iz '%s'", SHEET_NAME)
 
-    # Korak 2: upiši header red u A1:Q1
+    # Korak 2: upiši header red — range dinamički iz COLUMNS (ne hardkodiran)
+    last_col = chr(ord('A') + len(COLUMNS) - 1)
     header = [COLUMNS]
     svc.spreadsheets().values().update(
         spreadsheetId=sid,
-        range=f"'{SHEET_NAME}'!A1:Q1",
+        range=f"'{SHEET_NAME}'!A1:{last_col}1",
         valueInputOption="RAW",
         body={"values": header},
     ).execute()
-    log.info("Header red upisan: %s", COLUMNS)
+    log.info("Header red upisan (%d kolona, A-%s): %s", len(COLUMNS), last_col, COLUMNS)
 
     # Korak 3: smrzni header red (freeze row 1) da ostane vidljiv pri skrolanju
     freeze_req = {
