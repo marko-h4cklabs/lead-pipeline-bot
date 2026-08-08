@@ -391,20 +391,17 @@ async function loadLeadsFromSheet(){
 
     // Filtriraj samo 'qualified' i neobrađene (ne sent, ne in_progress od drugog)
     leads = rows.slice(1)
-      .filter(r => {
-        const status = r[COL.status] || '';
-        return status === 'qualified';
-      })
       .map((r, i) => ({
-        lead_id:   r[COL.lead_id]     || '',
-        naziv:     r[COL.naziv_firme] || '',
-        vlasnik:   r[COL.vlasnik]     || '',
-        opis:      r[COL.opis]        || '',
-        telefon:   r[COL.telefon]     || '',
-        status:    r[COL.status]      || '',
-        claimed_by: r[COL.claimed_by] || '',
-        _rowIndex: i + 2, // 1-indexed, +1 za header
-      }));
+        lead_id:    r[COL.lead_id]     || '',
+        naziv:      r[COL.naziv_firme] || '',
+        vlasnik:    r[COL.vlasnik]     || '',
+        opis:       r[COL.opis]        || '',
+        telefon:    r[COL.telefon]     || '',
+        status:     r[COL.status]      || '',
+        claimed_by: r[COL.claimed_by]  || '',
+        _rowIndex:  i + 2, // filter je NAKON map-a da i odgovara pravom Sheet redu
+      }))
+      .filter(l => l.status === 'qualified');
 
     sheetsStatus(`Učitano ${leads.length} qualified leadova.`, 'ok');
     renderLeads();
@@ -414,12 +411,31 @@ async function loadLeadsFromSheet(){
   }
 }
 
+async function lookupRowByLeadId(lead_id){
+  const data = await sheetsRequest('GET', `/values/'${SHEET_TAB}'!A:Q`);
+  const rows = data.values || [];
+  for(let i = 1; i < rows.length; i++){
+    const r = rows[i];
+    if((r[COL.lead_id] || '') === lead_id){
+      return {
+        rowIndex:   i + 1, // 1-indexed; i=0 je header pa i=1 → Sheet row 2
+        status:     r[COL.status]     || '',
+        vlasnik:    r[COL.vlasnik]    || '',
+        opis:       r[COL.opis]       || '',
+        telefon:    r[COL.telefon]    || '',
+        claimed_by: r[COL.claimed_by] || '',
+      };
+    }
+  }
+  return null;
+}
+
 async function writeToSheet(lead_id, updates){
   const lead = leads.find(l => l.lead_id === lead_id);
   if(!lead){ return; }
   if(!lead._rowIndex){
-    toast('Sheet row nepoznat — učitaj listu iz Sheeta za upis statusa.', 'err', 5000);
-    return;
+    // Bacamo — pozivatelji imaju try/catch i prikazat će grešku umjesto lažnog uspjeha
+    throw new Error('Sheet row nepoznat — klikni ↻ Učitaj iz Sheeta i pokušaj ponovno.');
   }
   const rowIdx = lead._rowIndex;
 
@@ -481,6 +497,34 @@ async function selectLead(id){
   const lead = leads.find(l => l.lead_id === id);
   if(!lead) return;
 
+  // Lead učitan iz URL parametara nema _rowIndex — dohvati ga iz Sheeta
+  if(!lead._rowIndex){
+    if(!accessToken){
+      toast('Prijavite se u Google da biste nastavili.', 'err', 5000);
+      return;
+    }
+    sheetsStatus('Tražim lead u Sheetu...', 'info');
+    try{
+      const found = await lookupRowByLeadId(id);
+      if(!found){
+        sheetsStatus('Lead nije pronađen u Sheetu.', 'err');
+        toast('Lead nije pronađen u Sheetu — klikni ↻ Učitaj iz Sheeta.', 'err', 7000);
+        return; // blokira nastavak — nema gdje pisati
+      }
+      lead._rowIndex  = found.rowIndex;
+      lead.status     = found.status;
+      lead.claimed_by = found.claimed_by;
+      if(found.vlasnik) lead.vlasnik = found.vlasnik;
+      if(found.opis)    lead.opis    = found.opis;
+      if(found.telefon) lead.telefon = found.telefon;
+      sheetsStatus(`Pronađeno (red ${found.rowIndex}).`, 'ok');
+    } catch(e){
+      sheetsStatus('Greška dohvaćanja iz Sheeta: ' + e.message, 'err');
+      toast('Greška Sheets lookupa — klikni ↻ Učitaj iz Sheeta.', 'err', 7000);
+      return; // blokira nastavak
+    }
+  }
+
   // Soft lock — upiši in_progress + claimed_by
   if(lead.status === 'qualified'){
     try{
@@ -488,8 +532,11 @@ async function selectLead(id){
         status: 'in_progress',
         claimed_by: currentUser || 'Nepoznato',
       });
+      lead.status = 'in_progress';
       toast('Lead zauzet — status: in_progress');
-    } catch{}
+    } catch(e){
+      toast('Upozorenje: in_progress nije upisan — ' + e.message, 'err', 5000);
+    }
   }
 
   activeId = id;
