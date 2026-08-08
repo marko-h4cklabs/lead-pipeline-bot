@@ -99,6 +99,31 @@
   .toast.ok{border-color:#3a5c40; color:var(--green);}
   .toast.err{border-color:#5c2f22; color:var(--red);}
   @keyframes fadeIn{from{opacity:0; transform:translateY(8px);} to{opacity:1; transform:none;}}
+
+  /* Tab navigation */
+  .tab-nav{display:flex; gap:0; margin-bottom:20px; border-bottom:1px solid var(--line);}
+  .tab-btn{background:none; border:none; color:var(--text-dim); font-family:var(--mono); font-size:11px; letter-spacing:1.2px; text-transform:uppercase; padding:9px 16px; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; border-radius:0; transition:color .15s;}
+  .tab-btn:active{transform:none;}
+  .tab-btn.active{color:var(--amber); border-bottom-color:var(--amber);}
+  .tab-btn:hover:not(.active){color:var(--text);}
+
+  /* Pipeline inputs */
+  .pipeline-note{font-size:12px; color:var(--text-dim); font-family:var(--mono); background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin-bottom:14px; line-height:1.7;}
+  .pipeline-note.warn{border-color:var(--amber-dim); color:var(--amber);}
+  .field-row{display:flex; flex-direction:column; gap:5px; margin-bottom:12px;}
+  .field-label{font-family:var(--mono); font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.8px;}
+  input[type=text], input[type=number], input[type=password]{
+    width:100%; background:var(--panel-2); border:1px solid var(--line); color:var(--text);
+    border-radius:7px; padding:9px 12px; font-family:var(--mono); font-size:13px;
+    outline:none; transition:border-color .15s;
+  }
+  input[type=text]:focus, input[type=number]:focus, input[type=password]:focus{border-color:var(--amber);}
+  .pat-row{display:flex; gap:8px; align-items:center;}
+  .pat-row input{flex:1;}
+  .dispatch-status{font-family:var(--mono); font-size:12px; margin-top:10px; padding:9px 12px; border-radius:6px; display:none; line-height:1.5;}
+  .dispatch-status.ok{color:var(--green); background:#0a1e0e; border:1px solid #2a5c35;}
+  .dispatch-status.err{color:var(--red); background:#1f0a06; border:1px solid #5c2f22;}
+  .dispatch-status.info{color:var(--amber); background:#1f1505; border:1px solid var(--amber-dim);}
 </style>
 </head>
 <body>
@@ -106,6 +131,12 @@
   <div class="masthead"><div class="dot" id="mastDot"></div><h1>VOICE STITCHER</h1></div>
   <p class="sub">snimi pozdrav → spoji s pitchem → skini → povuci u WhatsApp</p>
 
+  <div class="tab-nav">
+    <button class="tab-btn active" id="tabBtnStitcher">Voice Stitcher</button>
+    <button class="tab-btn" id="tabBtnPipeline">Pipeline</button>
+  </div>
+
+  <div id="tab-stitcher">
   <!-- GOOGLE AUTH PANEL -->
   <div class="panel" id="authPanel">
     <div class="panel-title">
@@ -182,6 +213,100 @@
   </div>
 
   <p class="footer-note">OGG / Opus, mono, 48kHz · status se automatski upisuje u Google Sheets</p>
+  </div><!-- /tab-stitcher -->
+
+  <div id="tab-pipeline" style="display:none;">
+
+    <!-- PAT PANEL -->
+    <div class="panel" id="patPanel">
+      <div class="panel-title">
+        <span>00 — GitHub PAT</span>
+        <span class="badge warn" id="patBadge">nije postavljen</span>
+      </div>
+      <div class="pipeline-note warn">
+        ⚠ Koristi <strong>fine-grained PAT</strong> s dozvolom <strong>Actions: write</strong> samo na repozitoriju <code>lead-pipeline-bot</code>. Sprema se lokalno u ovaj preglednik, nikad se ne šalje na server.
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="patInput">Personal Access Token</label>
+        <div class="pat-row">
+          <input type="password" id="patInput" placeholder="github_pat_..." autocomplete="off">
+          <button class="btn-primary" id="patSaveBtn">Spremi</button>
+          <button class="btn-danger" id="patClearBtn" style="display:none;">Obriši</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- COLLECT PANEL -->
+    <div class="panel">
+      <div class="panel-title"><span>01 — Collect Leads</span></div>
+      <div class="pipeline-note">
+        Traži nove firme (Google Places + CompanyWall) i upisuje ih u Sheet sa status='new'.<br>Trajanje: ~20 min · prati log na GitHub Actions.
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="collectMax">max_new</label>
+        <input type="number" id="collectMax" value="80" min="1" max="500">
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="collectNiche">niche_query — prazno = sve default niše</label>
+        <input type="text" id="collectNiche" placeholder="npr. vodoinstalater">
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="collectCounties">excluded_counties (zarezom odvojeno)</label>
+        <input type="text" id="collectCounties" value="Međimurska,Varaždinska">
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" id="collectRunBtn">▶ Pokretni Collect</button>
+      </div>
+      <div class="dispatch-status" id="collectStatus"></div>
+    </div>
+
+    <!-- VERIFY PANEL -->
+    <div class="panel">
+      <div class="panel-title"><span>02 — Verify Leads</span></div>
+      <div class="pipeline-note">
+        Verificira 'new' redove (CompanyWall scrape, web-scan, Claude opis).<br>Trajanje: ~30–45 min · prati log na GitHub Actions.
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="verifyMax">max_verify</label>
+        <input type="number" id="verifyMax" value="80" min="1" max="500">
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="verifyMinRev">min_revenue_eur (0 = odbaci samo 0 EUR)</label>
+        <input type="number" id="verifyMinRev" value="0" min="0">
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="verifyMaxRev">max_revenue_eur — prazno = bez gornje granice</label>
+        <input type="number" id="verifyMaxRev" placeholder="npr. 5000000" min="0">
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" id="verifyRunBtn">▶ Pokretni Verify</button>
+      </div>
+      <div class="dispatch-status" id="verifyStatus"></div>
+    </div>
+
+    <!-- FILTER PANEL -->
+    <div class="panel">
+      <div class="panel-title"><span>03 — Filter Leads</span></div>
+      <div class="pipeline-note">
+        Filtrira 'verified' redove → qualified / filtered_out / manual_review.<br>Trajanje: ~2 min.
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="filterMinEmp">min_employees</label>
+        <input type="number" id="filterMinEmp" value="5" min="1">
+      </div>
+      <div class="field-row">
+        <label class="field-label" for="filterMinYears">min_years</label>
+        <input type="number" id="filterMinYears" value="3" min="0">
+      </div>
+      <div class="btn-row">
+        <button class="btn-primary" id="filterRunBtn">▶ Pokretni Filter</button>
+      </div>
+      <div class="dispatch-status" id="filterStatus"></div>
+    </div>
+
+    <p class="footer-note">dispatch → pokreće GitHub Actions run · log: github.com/marko-h4cklabs/lead-pipeline-bot/actions</p>
+  </div><!-- /tab-pipeline -->
+
 </div>
 
 <div id="toastContainer"></div>
@@ -797,6 +922,133 @@ function handleUrlParams(){
   }
 }
 
+// ─── GITHUB PAT ────────────────────────────────────────────────────────────
+async function patGet(){
+  try{
+    if(window.storage){ const r = await window.storage.get('gh-pat'); return r?.value ?? null; }
+  }catch{}
+  try{ return localStorage.getItem('gh-pat'); }catch{ return null; }
+}
+async function patSet(val){
+  try{
+    if(window.storage){ await window.storage.set('gh-pat', val, {shared:false}); return; }
+  }catch{}
+  try{ localStorage.setItem('gh-pat', val); }catch{}
+}
+async function patClearStorage(){
+  try{
+    if(window.storage){ await window.storage.delete('gh-pat'); return; }
+  }catch{}
+  try{ localStorage.removeItem('gh-pat'); }catch{}
+}
+
+function setPATBadge(isSet){
+  $('patBadge').textContent = isSet ? 'postavljen' : 'nije postavljen';
+  $('patBadge').className = 'badge ' + (isSet ? 'ok' : 'warn');
+  $('patClearBtn').style.display = isSet ? 'inline-block' : 'none';
+  $('patInput').value = '';
+  $('patInput').placeholder = isSet ? '••••••••••••••••••••' : 'github_pat_...';
+}
+
+$('patSaveBtn').addEventListener('click', async () => {
+  const val = $('patInput').value.trim();
+  if(!val){ toast('Unesi PAT vrijednost', 'err'); return; }
+  if(!val.startsWith('github_pat_') && !val.startsWith('ghp_')){
+    toast('Upozorenje: PAT ne izgleda ispravno — nastavljam svejedno', 'err', 4000);
+  }
+  await patSet(val);
+  setPATBadge(true);
+  toast('PAT spreman lokalno');
+});
+
+$('patClearBtn').addEventListener('click', async () => {
+  if(!confirm('Obrisati PAT iz pohrane?')) return;
+  await patClearStorage();
+  setPATBadge(false);
+  toast('PAT obrisan');
+});
+
+// ─── GITHUB ACTIONS DISPATCH ───────────────────────────────────────────────
+const GH_REPO = 'marko-h4cklabs/lead-pipeline-bot';
+
+async function dispatchWorkflow(workflowFile, inputs){
+  const pat = await patGet();
+  if(!pat) throw new Error('PAT nije postavljen — unesi ga u panel 00');
+  const url = `https://api.github.com/repos/${GH_REPO}/actions/workflows/${workflowFile}/dispatches`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${pat}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ref: 'main', inputs}),
+  });
+  if(resp.status === 204) return; // success, no body
+  if(resp.status === 401) throw new Error('PAT nevažeći ili istekao — unesi novi u panel 00');
+  if(resp.status === 403) throw new Error('PAT nema "Actions: write" dozvolu');
+  if(resp.status === 404) throw new Error('Workflow ili repozitorij nije pronađen');
+  if(resp.status === 422) throw new Error('Nevažeći inputi (422) — provjeri parametre');
+  const text = await resp.text();
+  throw new Error(`GitHub API ${resp.status}: ${text.slice(0,200)}`);
+}
+
+function showDispatchStatus(el, msg, type){
+  el.textContent = msg;
+  el.className = 'dispatch-status ' + type;
+  el.style.display = 'block';
+}
+
+async function runDispatch(btn, statusEl, workflowFile, inputs){
+  btn.disabled = true;
+  showDispatchStatus(statusEl, 'Šaljem zahtjev...', 'info');
+  try{
+    await dispatchWorkflow(workflowFile, inputs);
+    showDispatchStatus(statusEl,
+      `✓ Run pokrenut — prati log: github.com/${GH_REPO}/actions`,
+      'ok');
+  }catch(e){
+    showDispatchStatus(statusEl, '✗ ' + e.message, 'err');
+  }finally{
+    btn.disabled = false;
+  }
+}
+
+$('collectRunBtn').addEventListener('click', () => {
+  runDispatch($('collectRunBtn'), $('collectStatus'), 'collect.yml', {
+    max_new:           String($('collectMax').value || '80'),
+    niche_query:       $('collectNiche').value.trim(),
+    excluded_counties: $('collectCounties').value.trim() || 'Međimurska,Varaždinska',
+  });
+});
+
+$('verifyRunBtn').addEventListener('click', () => {
+  runDispatch($('verifyRunBtn'), $('verifyStatus'), 'verify.yml', {
+    max_verify:      String($('verifyMax').value || '80'),
+    min_revenue_eur: String($('verifyMinRev').value ?? '0'),
+    max_revenue_eur: $('verifyMaxRev').value.trim(),
+  });
+});
+
+$('filterRunBtn').addEventListener('click', () => {
+  runDispatch($('filterRunBtn'), $('filterStatus'), 'filter.yml', {
+    min_employees: String($('filterMinEmp').value || '5'),
+    min_years:     String($('filterMinYears').value || '3'),
+  });
+});
+
+// ─── TAB SWITCHING ─────────────────────────────────────────────────────────
+function switchTab(tab){
+  const s = tab === 'stitcher';
+  $('tab-stitcher').style.display = s ? 'block' : 'none';
+  $('tab-pipeline').style.display = s ? 'none'  : 'block';
+  $('tabBtnStitcher').classList.toggle('active', s);
+  $('tabBtnPipeline').classList.toggle('active', !s);
+}
+$('tabBtnStitcher').addEventListener('click', () => switchTab('stitcher'));
+$('tabBtnPipeline').addEventListener('click', () => switchTab('pipeline'));
+
 // ─── INIT ──────────────────────────────────────────────────────────────────
 (async function init(){
   // Učitaj pitch iz lokalne pohrane
@@ -828,6 +1080,10 @@ function handleUrlParams(){
     $('sheetsStatus').className = 'sheets-status err';
     $('sheetsStatus').textContent = 'Google Sign-In nije dostupan — provjeri OAUTH_CLIENT_ID.';
   }
+
+  // Provjeri PAT status (za Pipeline tab)
+  const existingPat = await patGet();
+  setPATBadge(!!existingPat);
 
   // Render prazne liste
   renderLeads();
