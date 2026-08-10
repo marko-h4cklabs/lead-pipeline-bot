@@ -309,6 +309,19 @@
     </div>
 
     <p class="footer-note">dispatch → pokreće GitHub Actions run · log: github.com/marko-h4cklabs/lead-pipeline-bot/actions</p>
+
+    <!-- EXPORT PANEL -->
+    <div class="panel">
+      <div class="panel-title"><span>04 — Export kontakata</span></div>
+      <div class="pipeline-note">
+        Dohvaća sve <strong>qualified</strong> redove gdje je <code>obradjen_flag=NE</code> (još nisu obrađeni u Voice Stitcheru) i generira <strong>.vcf</strong> fajl (vCard 3.0).<br>
+        AirDrop na iPhone → Kontakti → masovni import.
+      </div>
+      <div class="btn-row">
+        <button class="btn-teal" id="exportVcfBtn">⬇ Export kontakata (.vcf)</button>
+      </div>
+      <div class="dispatch-status" id="exportStatus"></div>
+    </div>
   </div><!-- /tab-pipeline -->
 
 </div>
@@ -1042,6 +1055,73 @@ $('filterRunBtn').addEventListener('click', () => {
     min_years:     String($('filterMinYears').value),
   });
 });
+
+// ─── VCF EXPORT ────────────────────────────────────────────────────────────
+function vcfEscape(str){
+  return (str || '').replace(/\\/g,'\\\\').replace(/,/g,'\\,').replace(/;/g,'\\;').replace(/\n/g,'\\n');
+}
+
+async function exportVCF(){
+  const statusEl = $('exportStatus');
+  showDispatchStatus(statusEl, 'Dohvaćam podatke iz Sheeta...', 'info');
+  $('exportVcfBtn').disabled = true;
+  try{
+    if(!accessToken) throw new Error('Prijavite se u Google (Voice Stitcher tab) da biste mogli exportati.');
+    const data = await sheetsRequest('GET', `/values/'${SHEET_TAB}'!A:R`);
+    const rows = (data.values || []).slice(1); // preskoči header
+
+    const contacts = rows.filter(r =>
+      (r[COL.status] || '') === 'qualified' &&
+      (r[COL.obradjen_flag] || '') === 'NE'
+    );
+
+    if(!contacts.length){
+      showDispatchStatus(statusEl, 'Nema qualified redova s obradjen_flag=NE.', 'err');
+      return;
+    }
+
+    const cards = contacts.map(r => {
+      const vlasnik = vcfEscape(r[COL.vlasnik] || '');
+      const naziv   = vcfEscape(r[COL.naziv_firme] || '');
+      const telefon = (r[COL.telefon] || '').trim().replace(/'/g, ''); // makni apostrofni prefix
+      const grad    = vcfEscape(r[COL.grad] || '');
+      const opis    = vcfEscape((r[COL.opis] || '').slice(0, 120));
+      const note    = [grad, opis].filter(Boolean).join('. ');
+      const fn      = vlasnik || naziv;
+
+      const lines = [
+        'BEGIN:VCARD',
+        'VERSION:3.0',
+        `FN:${fn}`,
+        `ORG:${naziv}`,
+      ];
+      if(telefon) lines.push(`TEL;TYPE=CELL:${telefon}`);
+      if(note)    lines.push(`NOTE:${note}`);
+      lines.push('END:VCARD');
+      return lines.join('\r\n');
+    });
+
+    const vcf  = cards.join('\r\n');
+    const blob = new Blob([vcf], {type: 'text/vcard;charset=utf-8'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `leads-${today()}.vcf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showDispatchStatus(statusEl, `✓ ${contacts.length} kontakata exportano u leads-${today()}.vcf`, 'ok');
+    toast(`✓ ${contacts.length} kontakata — VCF spreman za AirDrop`);
+  }catch(e){
+    showDispatchStatus(statusEl, '✗ ' + e.message, 'err');
+  }finally{
+    $('exportVcfBtn').disabled = false;
+  }
+}
+
+$('exportVcfBtn').addEventListener('click', exportVCF);
 
 // ─── TAB SWITCHING ─────────────────────────────────────────────────────────
 function switchTab(tab){

@@ -232,10 +232,19 @@ def run():
     log.info("=== Verify završen: %d obrađenih redova ===", processed)
 
 
+def _completeness(row: dict) -> int:
+    """Broj popunjenih ključnih polja — koristi se kao tie-breaker u OIB dedupeu."""
+    return sum(
+        1 for f in ("vlasnik", "telefon", "opis", "broj_zaposlenih")
+        if str(row.get(f, "")).strip()
+    )
+
+
 def _dedup_by_oib(client) -> None:
     """
     Sekundarni dedupe po OIB-u — pokreće se nakon verify jer collect nema OIB.
-    Za svaki OIB s ≥2 reda: zadržava najraniji (najmanji _row), ostale odbacuje.
+    Za svaki OIB s ≥2 reda: zadržava zapis s najviše popunjenih ključnih polja
+    (vlasnik, telefon, opis, broj_zaposlenih). Tie-breaker: manji _row (stariji).
     Preskače redove koji su već 'rejected'.
     """
     from collections import defaultdict
@@ -250,14 +259,17 @@ def _dedup_by_oib(client) -> None:
     for oib, group in oib_groups.items():
         if len(group) < 2:
             continue
-        group.sort(key=lambda r: r["_row"])
+        # Sortiraj: kompletnost silazno, _row uzlazno (tie-breaker = stariji)
+        group.sort(key=lambda r: (-_completeness(r), r["_row"]))
         keep = group[0]
         for dup in group[1:]:
             if dup.get("status") == "rejected":
                 continue
             log.info(
-                "OIB duplikat %s: zadržavam row %d (%s), odbacujem row %d (%s)",
-                oib, keep["_row"], keep.get("lead_id"), dup["_row"], dup.get("lead_id"),
+                "OIB duplikat %s: zadržavam row %d (%s, score=%d), odbacujem row %d (%s, score=%d)",
+                oib,
+                keep["_row"], keep.get("lead_id"), _completeness(keep),
+                dup["_row"],  dup.get("lead_id"),  _completeness(dup),
             )
             dedup_updates.append({
                 "lead_id": dup["lead_id"],
