@@ -251,6 +251,10 @@
         <input type="text" id="collectNiche" placeholder="npr. vodoinstalater">
       </div>
       <div class="field-row">
+        <label class="field-label" for="collectCity">city_query — filtrira Places; CW pretražuje cijelu HR</label>
+        <input type="text" id="collectCity" placeholder="npr. Split">
+      </div>
+      <div class="field-row">
         <label class="field-label" for="collectCounties">excluded_counties (zarezom odvojeno)</label>
         <input type="text" id="collectCounties" value="Međimurska,Varaždinska">
       </div>
@@ -291,12 +295,12 @@
         Filtrira 'verified' redove → qualified / filtered_out / manual_review.<br>Trajanje: ~2 min.
       </div>
       <div class="field-row">
-        <label class="field-label" for="filterMinEmp">min_employees</label>
-        <input type="number" id="filterMinEmp" value="5" min="1">
+        <label class="field-label" for="filterMinEmp">min_employees — prazno = bez uvjeta</label>
+        <input type="number" id="filterMinEmp" value="5" min="1" placeholder="prazno = bilo koji">
       </div>
       <div class="field-row">
-        <label class="field-label" for="filterMinYears">min_years</label>
-        <input type="number" id="filterMinYears" value="3" min="0">
+        <label class="field-label" for="filterMinYears">min_years — prazno = bez uvjeta</label>
+        <input type="number" id="filterMinYears" value="3" min="0" placeholder="prazno = bilo koji">
       </div>
       <div class="btn-row">
         <button class="btn-primary" id="filterRunBtn">▶ Pokretni Filter</button>
@@ -1019,6 +1023,7 @@ $('collectRunBtn').addEventListener('click', () => {
   runDispatch($('collectRunBtn'), $('collectStatus'), 'collect.yml', {
     max_new:           String($('collectMax').value || '80'),
     niche_query:       $('collectNiche').value.trim(),
+    city_query:        $('collectCity').value.trim(),
     excluded_counties: $('collectCounties').value.trim() || 'Međimurska,Varaždinska',
   });
 });
@@ -1033,8 +1038,8 @@ $('verifyRunBtn').addEventListener('click', () => {
 
 $('filterRunBtn').addEventListener('click', () => {
   runDispatch($('filterRunBtn'), $('filterStatus'), 'filter.yml', {
-    min_employees: String($('filterMinEmp').value || '5'),
-    min_years:     String($('filterMinYears').value || '3'),
+    min_employees: String($('filterMinEmp').value),
+    min_years:     String($('filterMinYears').value),
   });
 });
 

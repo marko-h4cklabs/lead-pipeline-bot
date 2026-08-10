@@ -3,7 +3,8 @@ Dio 3 — Filtering
 Pokreni: python -m scripts.filter.main
 
 Ulaz: redovi sa status='verified'
-Kriterij: min. 5 zaposlenih, min. 3 godine poslovanja (podesivo env varijablama)
+Kriterij: min. zaposlenih / min. godina (podesivo env varijablama)
+Prazna vrijednost = preskači tu provjeru u potpunosti (bez odbacivanja).
 Izlaz: status → 'qualified' ili 'filtered_out'
 """
 import logging
@@ -22,8 +23,13 @@ logging.basicConfig(
 )
 log = logging.getLogger("filter")
 
-MIN_EMPLOYEES = int(os.environ.get("MIN_EMPLOYEES", "5"))
-MIN_YEARS = int(os.environ.get("MIN_YEARS", "3"))
+# Prazna vrijednost → None → provjera se preskače u potpunosti
+_min_emp_raw = os.environ.get("MIN_EMPLOYEES", "5").strip()
+MIN_EMPLOYEES: int | None = int(_min_emp_raw) if _min_emp_raw else None
+
+_min_years_raw = os.environ.get("MIN_YEARS", "3").strip()
+MIN_YEARS: int | None = int(_min_years_raw) if _min_years_raw else None
+
 CURRENT_YEAR = datetime.now().year
 
 
@@ -51,29 +57,34 @@ def _years_operating(godina_str: str) -> int | None:
 def evaluate(row: dict) -> tuple[str, str]:
     """
     Evaluira red i vraća (novi_status, razlog).
+    Ako je MIN_EMPLOYEES/MIN_YEARS None, ta provjera se preskače u potpunosti.
     """
     employees = _parse_employees(row.get("broj_zaposlenih", ""))
     years = _years_operating(row.get("godina_osnutka", ""))
 
     reasons = []
 
-    if employees is None:
-        return "manual_review", "broj_zaposlenih_nepoznat"
+    if MIN_EMPLOYEES is not None:
+        # Provjera zaposlenih aktiva — nepoznat broj ide u manual_review
+        if employees is None:
+            return "manual_review", "broj_zaposlenih_nepoznat"
+        if employees < MIN_EMPLOYEES:
+            reasons.append(f"premalo_zaposlenih:{employees}<{MIN_EMPLOYEES}")
 
-    if employees < MIN_EMPLOYEES:
-        reasons.append(f"premalo_zaposlenih:{employees}<{MIN_EMPLOYEES}")
-
-    if years is not None and years < MIN_YEARS:
+    if MIN_YEARS is not None and years is not None and years < MIN_YEARS:
         reasons.append(f"premladа_firma:{years}g<{MIN_YEARS}g")
 
     if reasons:
         return "filtered_out", "|".join(reasons)
 
-    return "qualified", f"zaposleni:{employees},godine:{years or '?'}"
+    emp_label = str(employees) if employees is not None else "?"
+    return "qualified", f"zaposleni:{emp_label},godine:{years or '?'}"
 
 
 def run():
-    log.info("=== Filter start ===")
+    log.info("=== Filter start — MIN_EMPLOYEES=%s, MIN_YEARS=%s ===",
+             MIN_EMPLOYEES if MIN_EMPLOYEES is not None else "bez uvjeta",
+             MIN_YEARS if MIN_YEARS is not None else "bez uvjeta")
     client = SheetsClient()
 
     verified_rows = client.read_by_status("verified")

@@ -18,6 +18,42 @@ Tekst s web stranice:
 
 Odgovor (samo opis, bez dodatnih komentara):"""
 
+FALLBACK_PROMPT = """Napiši jednu kratku rečenicu (max 15 riječi) koja opisuje čime se ova firma bavi, na temelju naziva i grada.
+Piši u trećem licu. Forma: "[Naziv] pruža [usluge] u [gradu]." ili slično.
+
+Naziv firme: {naziv}
+Grad: {grad}
+
+Odgovor (samo jedna rečenica, bez komentara):"""
+
+
+def generate_opis_fallback(naziv: str, grad: str = "") -> str:
+    """
+    Generira jednu rečenicu opisa bez web teksta — samo iz naziva i grada.
+    Koristi se kao fallback za CW leadove koji nemaju vlastitu web stranicu.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return ""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=60,
+            messages=[{
+                "role": "user",
+                "content": FALLBACK_PROMPT.format(naziv=naziv, grad=grad or "?")
+            }]
+        )
+        text = message.content[0].text.strip()
+        # Uzmi samo prvu rečenicu
+        first = text.split(".")[0].strip()
+        return (first + ".") if first else ""
+    except Exception as e:
+        log.warning("Claude fallback opis greška za '%s': %s", naziv, e)
+        return ""
+
 
 def generate_opis(naziv: str, web_text: str) -> str:
     """

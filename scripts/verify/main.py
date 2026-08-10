@@ -22,7 +22,7 @@ from scripts.lib.sheets import SheetsClient
 from scripts.verify.companywall_detail import scrape_detail
 from scripts.verify.provjera_hr import check_company
 from scripts.verify.web_scan import scan_website, extract_homepage_text
-from scripts.verify.claude_summary import generate_opis
+from scripts.verify.claude_summary import generate_opis, generate_opis_fallback
 
 logging.basicConfig(
     level=logging.INFO,
@@ -179,7 +179,7 @@ def run():
                 log.info("[%s] manual_review (nema mobitela): %s", lead_id, naziv)
                 updates["status"] = "manual_review"
 
-            # --- Korak 3: Opis (Claude API) — samo za verified s web-om ---
+            # --- Korak 3: Opis (Claude API) — web-scan ako postoji URL ---
             if updates.get("status") == "verified" and web_url:
                 try:
                     web_text = extract_homepage_text(session, web_url)
@@ -189,6 +189,16 @@ def run():
                             updates["opis"] = opis
                 except Exception as e:
                     log.warning("[%s] opis greška: %s", lead_id, e)
+
+            # --- Korak 3b: Fallback opis za firme bez web URL-a (naziv + grad) ---
+            if not updates.get("opis") and updates.get("status") == "verified":
+                try:
+                    fallback = generate_opis_fallback(naziv, grad=row.get("grad", ""))
+                    if fallback:
+                        updates["opis"] = fallback
+                        log.debug("[%s] fallback opis: %s", lead_id, fallback)
+                except Exception as e:
+                    log.warning("[%s] fallback opis greška: %s", lead_id, e)
 
             log.info("[%s] → status: %s", lead_id, updates.get("status"))
             all_updates.append(updates)

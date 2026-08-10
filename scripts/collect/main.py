@@ -31,6 +31,7 @@ MAX_NEW_PER_RUN = int(os.environ.get("MAX_NEW_PER_RUN", "80"))
 
 # Opcionalni parametri — prazno znači "koristi default"
 NICHE_QUERY = os.environ.get("NICHE_QUERY", "").strip()
+CITY_QUERY = os.environ.get("CITY_QUERY", "").strip()
 _exc_raw = os.environ.get("EXCLUDED_COUNTIES", "Međimurska,Varaždinska").strip()
 EXCLUDED_COUNTIES: set[str] = {c.strip() for c in _exc_raw.split(",") if c.strip()}
 
@@ -58,15 +59,28 @@ def run():
 
     # --- Parametri logiranje ---
     if NICHE_QUERY:
-        log.info("NICHE_QUERY: %r (overrideava default liste)", NICHE_QUERY)
+        log.info("NICHE_QUERY: %r", NICHE_QUERY)
     else:
         log.info("NICHE_QUERY: prazno — koriste se default niše")
+    if CITY_QUERY:
+        log.info("CITY_QUERY: %r (kombinira se s Places upitima)", CITY_QUERY)
+        log.info("Napomena: CITY_QUERY filtrira samo Google Places — CW pretražuje cijelu HR.")
     log.info("EXCLUDED_COUNTIES: %s", EXCLUDED_COUNTIES or "(bez filtera)")
     log.info("Kvota: max=%d, Places soft cap=%d (spillover → CW)", MAX_NEW_PER_RUN, places_soft_cap)
 
     # --- Izvor 1: Google Places ---
     log.info("Google Places: pokretanje...")
-    places_queries = [NICHE_QUERY] if NICHE_QUERY else None
+    # CITY_QUERY se dodaje svim Places upitima (npr. "keramičar Split")
+    if NICHE_QUERY and CITY_QUERY:
+        places_queries = [f"{NICHE_QUERY} {CITY_QUERY}"]
+    elif CITY_QUERY:
+        # Nema specifične niše — kombiniraj grad sa svim default nišama
+        from scripts.collect.places_client import NISE_QUERIES as _NISE
+        places_queries = [f"{niche} {CITY_QUERY}" for niche in _NISE]
+    elif NICHE_QUERY:
+        places_queries = [NICHE_QUERY]
+    else:
+        places_queries = None
     places_count = 0
     for lead in iter_all_searches(queries=places_queries, excluded_counties=EXCLUDED_COUNTIES):
         if places_count >= places_soft_cap:

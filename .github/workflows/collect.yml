@@ -11,6 +11,10 @@ on:
         description: "Nišni search term (npr. 'vodoinstalater'). Prazno = sve default niše."
         required: false
         default: ""
+      city_query:
+        description: "Grad za Places search (npr. 'Split'). Kombinira se s niche_query. CW pretražuje cijelu HR."
+        required: false
+        default: ""
       excluded_counties:
         description: "Zarezom odvojene županije za isključiti (default: Međimurska,Varaždinska)"
         required: false
@@ -54,5 +58,6 @@ jobs:
           GITHUB_PAGES_BASE: ${{ vars.PAGES_BASE_URL }}
           MAX_NEW_PER_RUN: ${{ inputs.max_new }}
           NICHE_QUERY: ${{ inputs.niche_query }}
+          CITY_QUERY: ${{ inputs.city_query }}
           EXCLUDED_COUNTIES: ${{ inputs.excluded_counties }}
         run: python -m scripts.collect.main
