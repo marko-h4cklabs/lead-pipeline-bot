@@ -355,6 +355,8 @@ const OAUTH_CLIENT_ID   = '401516118047-h0c5u4u1ngclf2dkrade0c5n6r9decup.apps.go
 const SHEETS_ID         = '1ail8Ervy7SD_lap6GTc36Owh9Tdbq3mXjDvxMmxLz18';
 const SHEET_TAB         = 'Leads';
 const SHEETS_API_BASE   = 'https://sheets.googleapis.com/v4/spreadsheets';
+const FP_TAB            = 'FixedPitches';
+const FP_MAX_LEN        = 45000; // Google Sheets cell limit ~50k chars; buffer za sigurnost
 
 // Kolone (A=0, B=1, ...) — mora odgovarati shemi u sheets.py
 const COL = {
@@ -381,7 +383,10 @@ const COL = {
 // ─── STATE ─────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 let accessToken = null;
+let tokenClient = null;
+let silentAuthInProgress = false;
 let currentUser = null;
+let currentUserEmail = null;
 let leads = [];      // [{lead_id, naziv, vlasnik, opis, status, _row}, ...]
 let activeId = null;
 let fixedBlob = null, fixedMime = null; // aktivna verzija — sync iz pitches[]
@@ -447,7 +452,7 @@ async function storeSet(key,value){
 // ─── GOOGLE OAUTH (GIS) ────────────────────────────────────────────────────
 function initGSI(){
   if(typeof google === 'undefined' || !google.accounts) return;
-  google.accounts.oauth2.initTokenClient({
+  tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: OAUTH_CLIENT_ID,
     scope: 'https://www.googleapis.com/auth/spreadsheets',
     callback: onTokenResponse,
@@ -461,12 +466,23 @@ function initGSI(){
   google.accounts.id.renderButton($('gsiButtonDiv'), {
     theme:'filled_black', size:'medium', text:'sign_in_with', shape:'pill',
   });
+
+  // Tiha ponovna prijava — pokušaj bez interakcije korisnika.
+  // Uspijeva ako ima aktivan Google session s prethodnim pristankom za ovu aplikaciju.
+  // Greška se tiho ignorira — fallback je One Tap prompt i sign-in button.
+  silentAuthInProgress = true;
+  tokenClient.requestAccessToken({prompt: ''});
 }
 
 function onIdTokenResponse(resp){
   // Dekodiramo JWT da dohvatimo ime — token je samo za identifikaciju
   const payload = JSON.parse(atob(resp.credential.split('.')[1]));
   currentUser = payload.name || payload.email || 'Korisnik';
+  currentUserEmail = payload.email || '';
+  try{
+    localStorage.setItem('fp_last_user', currentUser);
+    localStorage.setItem('fp_last_email', currentUserEmail);
+  }catch{}
   $('authUser').textContent = currentUser;
   // Zatraži access token za Sheets API
   requestAccessToken();
@@ -474,20 +490,27 @@ function onIdTokenResponse(resp){
 
 function requestAccessToken(){
   if(typeof google === 'undefined') return;
-  const tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: OAUTH_CLIENT_ID,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    callback: onTokenResponse,
-  });
+  if(!tokenClient){
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: OAUTH_CLIENT_ID,
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      callback: onTokenResponse,
+    });
+  }
   tokenClient.requestAccessToken({prompt:''});
 }
 
 function onTokenResponse(tokenResp){
+  const wasSilent = silentAuthInProgress;
+  silentAuthInProgress = false;
   if(tokenResp.error){
-    toast('OAuth greška: '+tokenResp.error, 'err');
+    // Tiha prijava nije uspjela (normalno ako nema prethodnog pristanka) — ne prikazuj grešku
+    if(!wasSilent) toast('OAuth greška: '+tokenResp.error, 'err');
     return;
   }
   accessToken = tokenResp.access_token;
+  // Ako imamo ime iz prethodne sesije (localStorage), prikaži ga odmah
+  if(currentUser) $('authUser').textContent = currentUser;
   setAuthState(true);
 }
 
@@ -497,7 +520,11 @@ function setAuthState(loggedIn){
   $('signOutBtn').style.display = loggedIn ? 'inline-block' : 'none';
   $('gsiButtonDiv').style.display = loggedIn ? 'none' : 'block';
   $('contactsPanel').classList.toggle('step-locked', !fixedBlob);
-  if(loggedIn) toast('Prijavljeni kao ' + currentUser);
+  if(loggedIn){
+    toast('Prijavljeni kao ' + (currentUser || '...'));
+    // Učitaj pitcheve iz Sheeta (zajednička pohrana)
+    fpSync().catch(e => console.warn('fpSync greška:', e));
+  }
 }
 
 $('signOutBtn')?.addEventListener('click', ()=>{
@@ -722,9 +749,119 @@ async function pitchesLoad(){
   if(raw){ try{ return JSON.parse(raw); }catch{} }
   return null;
 }
-async function pitchesSave(list){ await storeSet('fixed-pitches', JSON.stringify(list)); }
+async function pitchesSave(list){
+  pitches = list;
+  try{ await storeSet('fixed-pitches', JSON.stringify(list)); }catch{}
+}
 async function pitchActiveIdGet(){ return (await storeGet('fixed-pitch-active-id')) || null; }
-async function pitchActiveIdSet(id){ await storeSet('fixed-pitch-active-id', id || ''); }
+async function pitchActiveIdSet(id){
+  activePitchId = id || null;
+  try{ await storeSet('fixed-pitch-active-id', id || ''); }catch{}
+}
+
+// ─── FIXED PITCHES — SHEET BACKEND ─────────────────────────────────────────
+
+async function fpEnsureTab(){
+  try{
+    await sheetsRequest('GET', `/values/${FP_TAB}!A1:A1`);
+  }catch(e){
+    if(!e.message?.includes('400')) throw e;
+    // Tab ne postoji — kreiraj ga s headerom
+    await sheetsRequest('POST', ':batchUpdate', {
+      requests:[{ addSheet:{ properties:{ title: FP_TAB } } }]
+    });
+    await sheetsRequest('PUT',
+      `/values/${FP_TAB}!A1:F1?valueInputOption=USER_ENTERED`,
+      { values:[['pitch_id','naziv','audio_data_url','spremio','datum_spremanja','aktivan']] }
+    );
+  }
+}
+
+async function fpWriteAll(){
+  // Očisti stare podatke pa upiši trenutnu listu
+  await sheetsRequest('POST', `/values/${FP_TAB}!A2:F999:clear`, {});
+  if(!pitches.length) return;
+  const rows = pitches.map(p => [
+    p.id,
+    p.naziv,
+    `data:${p.audio.mime};base64,${p.audio.b64}`,
+    p.spremio || currentUserEmail || '',
+    p.datum_spremanja || '',
+    p.id === activePitchId ? 'DA' : 'NE',
+  ]);
+  await sheetsRequest('PUT',
+    `/values/${FP_TAB}!A2?valueInputOption=USER_ENTERED`,
+    { values: rows }
+  );
+}
+
+async function _fpMigrateFromLocal(){
+  // Vraća stare pitcheve iz localStorage (za migraciju na prvi Sheet sync)
+  try{
+    const raw = await storeGet('fixed-pitches');
+    if(raw){
+      const list = JSON.parse(raw);
+      if(Array.isArray(list) && list.length) return list;
+    }
+    const oldRaw = await storeGet('fixed-pitch-audio');
+    if(oldRaw){
+      const {mime, b64} = JSON.parse(oldRaw);
+      return [{
+        id: 'migrated-' + Date.now(),
+        naziv: 'Pitch (migrirani)',
+        audio: {mime, b64},
+        datum_spremanja: new Date().toISOString(),
+      }];
+    }
+  }catch{}
+  return [];
+}
+
+async function fpSync(){
+  // Učitaj pitcheve iz Sheeta, ažuriraj in-memory state i UI.
+  // Zove se pri prijavi. Ako je Sheet prazan, migrira localStorage podatke.
+  await fpEnsureTab();
+  let sheetData;
+  try{
+    sheetData = await sheetsRequest('GET', `/values/${FP_TAB}!A:F`);
+  }catch(e){
+    toast('Greška pri čitanju pitcheva iz Sheeta: ' + e.message, 'err', 4000);
+    return;
+  }
+  const rows = (sheetData.values || []).slice(1); // preskači header
+
+  if(rows.length === 0){
+    // Tab je prazan — pokušaj migrirati podatke iz localStorage
+    const migrated = await _fpMigrateFromLocal();
+    if(migrated.length){
+      pitches = migrated;
+      activePitchId = pitches[0]?.id || null;
+      await fpWriteAll();
+      toast(`Migrirano ${pitches.length} ${pitches.length === 1 ? 'pitch' : 'pitcheva'} u Sheet`);
+    }
+  } else {
+    pitches = rows.map(r => {
+      const dataUrl = r[2] || '';
+      let mime = 'audio/ogg', b64 = '';
+      const m = dataUrl.match(/^data:([^;]+);base64,([\s\S]*)$/);
+      if(m){ mime = m[1]; b64 = m[2]; }
+      return {
+        id:              r[0] || String(Date.now()),
+        naziv:           r[1] || 'Bez naziva',
+        audio:           { mime, b64 },
+        spremio:         r[3] || '',
+        datum_spremanja: r[4] || '',
+        _aktivan:        (r[5] || 'NE').toUpperCase() === 'DA',
+      };
+    }).filter(p => p.audio.b64);
+    const active = pitches.find(p => p._aktivan);
+    activePitchId = active?.id || pitches[0]?.id || null;
+    pitches.forEach(p => delete p._aktivan);
+  }
+
+  await syncActivePitchToBlob();
+  renderPitchList();
+}
 
 function setFixedBadge(ok, naziv){
   const b = $('fixedBadge');
@@ -780,6 +917,7 @@ async function setActivePitch(id){
   await syncActivePitchToBlob();
   renderPitchList();
   toast('Aktivna verzija: ' + (pitches.find(p => p.id === id)?.naziv || ''));
+  if(accessToken) fpWriteAll().catch(e => toast('Sheet: ' + e.message, 'err', 3000));
 }
 
 async function confirmDeletePitch(id){
@@ -795,16 +933,31 @@ async function confirmDeletePitch(id){
   await syncActivePitchToBlob();
   renderPitchList();
   toast(pitches.length ? 'Verzija obrisana.' : 'Sve verzije obrisane.', pitches.length ? 'ok' : 'err');
+  if(accessToken) fpWriteAll().catch(e => toast('Sheet: ' + e.message, 'err', 3000));
 }
 
 async function saveNewPitch(blob, mime, naziv){
-  const id = Date.now().toString();
   const b64 = await blobToBase64(blob);
-  pitches.push({id, naziv, audio:{mime, b64}, datum_spremanja: new Date().toISOString()});
+  const dataUrl = `data:${mime};base64,${b64}`;
+  if(dataUrl.length > FP_MAX_LEN){
+    toast(
+      `Audio preveć velik za Sheet (${Math.round(dataUrl.length/1000)}k > ${FP_MAX_LEN/1000}k znakova) — smanji trajanje snimke.`,
+      'err', 7000
+    );
+    return false;
+  }
+  const id = Date.now().toString();
+  pitches.push({
+    id, naziv,
+    audio: {mime, b64},
+    datum_spremanja: new Date().toISOString(),
+  });
   await pitchesSave(pitches);
   if(!activePitchId){ activePitchId = id; await pitchActiveIdSet(id); }
   await syncActivePitchToBlob();
   renderPitchList();
+  if(accessToken) fpWriteAll().catch(e => toast('Sheet: ' + e.message, 'err', 3000));
+  return true;
 }
 
 function resetPendingFixed(){
@@ -864,9 +1017,11 @@ $('fixedSaveNewBtn').addEventListener('click', async () => {
   if(!fixedPendingBlob) return;
   const naziv = $('fixedNazivInput').value.trim()
     || ('Pitch ' + new Date().toLocaleDateString('hr-HR'));
-  await saveNewPitch(fixedPendingBlob, fixedPendingMime, naziv);
-  resetPendingFixed();
-  toast('Verzija "' + naziv + '" spremljena');
+  const ok = await saveNewPitch(fixedPendingBlob, fixedPendingMime, naziv);
+  if(ok !== false){
+    resetPendingFixed();
+    toast('Verzija "' + naziv + '" spremljena');
+  }
 });
 
 $('fixedRecDiscardBtn').addEventListener('click', resetPendingFixed);
@@ -1293,7 +1448,13 @@ $('tabBtnPipeline').addEventListener('click', () => switchTab('pipeline'));
 
 // ─── INIT ──────────────────────────────────────────────────────────────────
 (async function init(){
-  // Učitaj pitch iz lokalne pohrane
+  // Obnovi korisničko ime iz prethodne sesije (za prikaz pri tihoj prijavi)
+  try{
+    currentUser = localStorage.getItem('fp_last_user') || null;
+    currentUserEmail = localStorage.getItem('fp_last_email') || null;
+  }catch{}
+
+  // Učitaj pitch iz lokalne pohrane (pre-auth fallback)
   await loadPitchesFromStorage();
 
   // Inicijaliziraj Google Sign-In
