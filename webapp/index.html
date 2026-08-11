@@ -6,8 +6,6 @@
 <title>Voice Stitcher</title>
 <!-- opus-recorder za OGG/Opus encoding -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/opus-recorder/8.0.5/recorder.min.js"></script>
-<!-- Google Identity Services (OAuth 2.0, client-side) -->
-<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root{
     --bg: #14110F;
@@ -145,16 +143,21 @@
   </div>
 
   <div id="tab-stitcher">
-  <!-- GOOGLE AUTH PANEL -->
+  <!-- API KEY PANEL -->
   <div class="panel" id="authPanel">
     <div class="panel-title">
-      <span>00 — Google Sheets veza</span>
-      <span class="badge" id="authBadge">nije prijavljeno</span>
+      <span>00 — API veza</span>
+      <span class="badge" id="authBadge">nije spojeno</span>
     </div>
-    <div class="auth-section">
-      <div id="gsiButtonDiv"></div>
-      <span class="auth-user" id="authUser"></span>
-      <button class="btn-danger" id="signOutBtn" style="display:none; font-size:12px; padding:6px 12px;">Odjavi se</button>
+    <div id="apiKeySection">
+      <div class="field-row" style="margin-bottom:10px;">
+        <div class="field-label">Pristupni ključ</div>
+        <input type="password" id="apiKeyField" placeholder="Upiši ključ…" autocomplete="off">
+      </div>
+      <button class="btn-primary" id="apiKeyConnectBtn" style="font-size:13px; padding:7px 14px;">Spoji</button>
+    </div>
+    <div id="apiKeyConnectedSection" style="display:none;">
+      <button class="btn-danger" id="apiKeyResetBtn" style="font-size:12px; padding:6px 12px;">Promijeni ključ</button>
     </div>
     <div id="sheetsStatus" class="sheets-status info" style="margin-top:8px; display:none;"></div>
   </div>
@@ -352,44 +355,14 @@
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
 // Zamijeni s pravim vrijednostima (ili učitaj iz meta tagova):
-const OAUTH_CLIENT_ID   = '401516118047-h0c5u4u1ngclf2dkrade0c5n6r9decup.apps.googleusercontent.com';
-const SHEETS_ID         = '1ail8Ervy7SD_lap6GTc36Owh9Tdbq3mXjDvxMmxLz18';
 const SHEET_TAB         = 'Leads';
-const SHEETS_API_BASE   = 'https://sheets.googleapis.com/v4/spreadsheets';
 const FP_TAB            = 'FixedPitches';
-const FP_CHUNK_SIZE     = 38000; // max base64 chars per Sheet cell (~50k limit, buffer ostavljen)
-
-// Kolone (A=0, B=1, ...) — mora odgovarati shemi u sheets.py
-const COL = {
-  lead_id:        0,
-  naziv_firme:    1,
-  oib:            2,
-  vlasnik:        3,
-  telefon:        4,
-  web:            5,
-  grad:           6,
-  zupanija:       7,
-  opis:           8,
-  broj_zaposlenih:9,
-  godina_osnutka: 10,
-  izvor:          11,
-  status:         12,
-  claimed_by:     13,
-  datum_dodan:    14,
-  datum_poslano:  15,
-  link:           16,
-  obradjen_flag:  17, // R — DA kad je audio kreiran u Voice Stitcheru
-};
+const API_BASE          = 'https://pipeline-api-PLACEHOLDER.onrender.com'; // ← popuni nakon deploya
 
 // ─── STATE ─────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
-let accessToken = null;
-let tokenClient = null;
-let silentAuthInProgress = false;
-let currentUser = null;
-let currentUserEmail = null;
-let _fpWriteQ = Promise.resolve(); // serializira fpWriteAll pozive — nema concurrent clear+write
-let leads = [];      // [{lead_id, naziv, vlasnik, opis, status, _row}, ...]
+let apiKey = null;
+let leads = [];      // [{lead_id, naziv, vlasnik, opis, status}, ...]
 let activeId = null;
 let fixedBlob = null, fixedMime = null; // aktivna verzija — sync iz pitches[]
 let pitches = [];       // [{id, naziv, audio:{mime,b64}, datum_spremanja}]
@@ -451,92 +424,39 @@ async function storeSet(key,value){
   try{ localStorage.setItem(key,value); }catch{}
 }
 
-// ─── GOOGLE OAUTH (GIS) ────────────────────────────────────────────────────
-function initGSI(){
-  if(typeof google === 'undefined' || !google.accounts) return;
-  tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: OAUTH_CLIENT_ID,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    callback: onTokenResponse,
-  });
-
-  google.accounts.id.initialize({
-    client_id: OAUTH_CLIENT_ID,
-    callback: onIdTokenResponse,
-    auto_select: true,
-  });
-  google.accounts.id.renderButton($('gsiButtonDiv'), {
-    theme:'filled_black', size:'medium', text:'sign_in_with', shape:'pill',
-  });
-
-  // Tiha ponovna prijava — pokušaj bez interakcije korisnika.
-  // Uspijeva ako ima aktivan Google session s prethodnim pristankom za ovu aplikaciju.
-  // Greška se tiho ignorira — fallback je One Tap prompt i sign-in button.
-  silentAuthInProgress = true;
-  tokenClient.requestAccessToken({prompt: ''});
+// ─── API KEY AUTH ──────────────────────────────────────────────────────────
+function setApiConnected(connected){
+  $('authBadge').textContent = connected ? 'spojeno' : 'nije spojeno';
+  $('authBadge').className = 'badge ' + (connected ? 'ok' : '');
+  $('apiKeySection').style.display = connected ? 'none' : 'block';
+  $('apiKeyConnectedSection').style.display = connected ? 'block' : 'none';
 }
 
-function onIdTokenResponse(resp){
-  // Dekodiramo JWT da dohvatimo ime — token je samo za identifikaciju
-  const payload = JSON.parse(atob(resp.credential.split('.')[1]));
-  currentUser = payload.name || payload.email || 'Korisnik';
-  currentUserEmail = payload.email || '';
-  try{
-    localStorage.setItem('fp_last_user', currentUser);
-    localStorage.setItem('fp_last_email', currentUserEmail);
-  }catch{}
-  $('authUser').textContent = currentUser;
-  // Zatraži access token za Sheets API
-  requestAccessToken();
-}
-
-function requestAccessToken(){
-  if(typeof google === 'undefined') return;
-  if(!tokenClient){
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: OAUTH_CLIENT_ID,
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
-      callback: onTokenResponse,
-    });
-  }
-  tokenClient.requestAccessToken({prompt:''});
-}
-
-function onTokenResponse(tokenResp){
-  const wasSilent = silentAuthInProgress;
-  silentAuthInProgress = false;
-  if(tokenResp.error){
-    // Tiha prijava nije uspjela (normalno ako nema prethodnog pristanka) — ne prikazuj grešku
-    if(!wasSilent) toast('OAuth greška: '+tokenResp.error, 'err');
-    return;
-  }
-  accessToken = tokenResp.access_token;
-  // Ako imamo ime iz prethodne sesije (localStorage), prikaži ga odmah
-  if(currentUser) $('authUser').textContent = currentUser;
-  setAuthState(true);
-}
-
-function setAuthState(loggedIn){
-  $('authBadge').textContent = loggedIn ? 'prijavljeno' : 'nije prijavljeno';
-  $('authBadge').className = 'badge ' + (loggedIn ? 'ok' : '');
-  $('signOutBtn').style.display = loggedIn ? 'inline-block' : 'none';
-  $('gsiButtonDiv').style.display = loggedIn ? 'none' : 'block';
-  $('contactsPanel').classList.toggle('step-locked', !fixedBlob);
-  if(loggedIn){
-    toast('Prijavljeni kao ' + (currentUser || '...'));
-    // Učitaj pitcheve iz Sheeta (zajednička pohrana)
+async function initApiKey(){
+  const stored = await storeGet('api-key');
+  if(stored){
+    apiKey = stored;
+    setApiConnected(true);
     fpSync().catch(e => console.warn('fpSync greška:', e));
+  } else {
+    setApiConnected(false);
   }
 }
 
-$('signOutBtn')?.addEventListener('click', ()=>{
-  accessToken = null;
-  currentUser = null;
-  google.accounts.id.disableAutoSelect();
-  $('authUser').textContent = '';
-  setAuthState(false);
-  leads = [];
-  renderLeads();
+$('apiKeyConnectBtn').addEventListener('click', async () => {
+  const key = $('apiKeyField').value.trim();
+  if(!key) return;
+  await storeSet('api-key', key);
+  apiKey = key;
+  $('apiKeyField').value = '';
+  setApiConnected(true);
+  fpSync().catch(e => console.warn('fpSync greška:', e));
+});
+
+$('apiKeyResetBtn').addEventListener('click', async () => {
+  await storeSet('api-key', '');
+  apiKey = null;
+  setApiConnected(false);
 });
 
 // ─── SHEETS API ─────────────────────────────────────────────────────────────
@@ -547,115 +467,52 @@ function sheetsStatus(msg, type='info'){
   el.textContent = msg;
 }
 
-async function sheetsRequest(method, path, body=null){
-  if(!accessToken) throw new Error('Nije prijavljeno');
-  const url = `${SHEETS_API_BASE}/${SHEETS_ID}${path}`;
+async function apiRequest(method, path, body=null){
+  if(!apiKey) throw new Error('API ključ nije postavljen');
   const opts = {
     method,
-    headers: {
-      'Authorization': 'Bearer ' + accessToken,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
   };
   if(body) opts.body = JSON.stringify(body);
-  const resp = await fetch(url, opts);
-  if(resp.status === 401){
-    // Token istekao — zatraži novi
-    accessToken = null;
-    requestAccessToken();
-    throw new Error('Token istekao — molimo se prijavite ponovo.');
-  }
+  const resp = await fetch(API_BASE + path, opts);
+  if(resp.status === 401) throw new Error('Pogrešan API ključ');
   if(!resp.ok){
-    const err = await resp.text();
-    throw new Error(`Sheets API ${resp.status}: ${err}`);
+    const err = await resp.text().catch(()=>'');
+    throw new Error(`API ${resp.status}: ${err}`);
   }
   return resp.json();
 }
 
 async function loadLeadsFromSheet(){
-  if(!accessToken){ toast('Prijavite se prvo!', 'err'); return; }
-  sheetsStatus('Učitavam leadove iz Sheeta...', 'info');
+  if(!apiKey){ toast('API ključ nije postavljen!', 'err'); return; }
+  sheetsStatus('Učitavam leadove...', 'info');
   try{
-    const data = await sheetsRequest('GET',
-      `/values/'${SHEET_TAB}'!A:R`
-    );
-    const rows = data.values || [];
-    if(rows.length < 2){ sheetsStatus('Sheet je prazan.', 'info'); return; }
-
-    // Filtriraj samo 'qualified' — filter NAKON map-a da _rowIndex odgovara pravom Sheet redu
-    leads = rows.slice(1)
-      .map((r, i) => ({
-        lead_id:       r[COL.lead_id]       || '',
-        naziv:         r[COL.naziv_firme]   || '',
-        vlasnik:       r[COL.vlasnik]       || '',
-        opis:          r[COL.opis]          || '',
-        telefon:       r[COL.telefon]       || '',
-        status:        r[COL.status]        || '',
-        claimed_by:    r[COL.claimed_by]    || '',
-        obradjen_flag: r[COL.obradjen_flag] || '',
-        _rowIndex:     i + 2,
-      }))
-      .filter(l => l.status === 'qualified');
-
+    const data = await apiRequest('GET', '/api/leads');
+    leads = data
+      .filter(r => r.status === 'qualified')
+      .map(r => ({
+        lead_id:       r.lead_id       || '',
+        naziv:         r.naziv_firme   || '',
+        vlasnik:       r.vlasnik       || '',
+        opis:          r.opis          || '',
+        telefon:       r.telefon       || '',
+        status:        r.status        || '',
+        claimed_by:    r.claimed_by    || '',
+        obradjen_flag: r.obradjen_flag || '',
+        _fullyLoaded:  true,
+      }));
     sheetsStatus(`Učitano ${leads.length} qualified leadova.`, 'ok');
     renderLeads();
   } catch(e){
     sheetsStatus('Greška: ' + e.message, 'err');
-    toast('Nije moguće učitati Sheet: ' + e.message, 'err', 5000);
+    toast('Nije moguće učitati leadove: ' + e.message, 'err', 5000);
   }
-}
-
-async function lookupRowByLeadId(lead_id){
-  const data = await sheetsRequest('GET', `/values/'${SHEET_TAB}'!A:R`);
-  const rows = data.values || [];
-  for(let i = 1; i < rows.length; i++){
-    const r = rows[i];
-    if((r[COL.lead_id] || '') === lead_id){
-      return {
-        rowIndex:      i + 1, // 1-indexed; i=0 je header pa i=1 → Sheet row 2
-        status:        r[COL.status]        || '',
-        vlasnik:       r[COL.vlasnik]       || '',
-        opis:          r[COL.opis]          || '',
-        telefon:       r[COL.telefon]       || '',
-        claimed_by:    r[COL.claimed_by]    || '',
-        obradjen_flag: r[COL.obradjen_flag] || '',
-      };
-    }
-  }
-  return null;
 }
 
 async function writeToSheet(lead_id, updates){
+  await apiRequest('POST', `/api/leads/${encodeURIComponent(lead_id)}/status`, updates);
   const lead = leads.find(l => l.lead_id === lead_id);
-  if(!lead){ return; }
-  if(!lead._rowIndex){
-    // Bacamo — pozivatelji imaju try/catch i prikazat će grešku umjesto lažnog uspjeha
-    throw new Error('Sheet row nepoznat — klikni ↻ Učitaj iz Sheeta i pokušaj ponovno.');
-  }
-  const rowIdx = lead._rowIndex;
-
-  // Dohvati cijeli red
-  try{
-    const data = await sheetsRequest('GET',
-      `/values/'${SHEET_TAB}'!A${rowIdx}:R${rowIdx}`
-    );
-    const row = (data.values || [[]])[0] || [];
-    // Dopuni do R (18 stupaca)
-    while(row.length < 18) row.push('');
-    // Primijeni updates
-    for(const [key, val] of Object.entries(updates)){
-      if(COL[key] !== undefined) row[COL[key]] = val;
-    }
-    await sheetsRequest('PUT',
-      `/values/'${SHEET_TAB}'!A${rowIdx}:R${rowIdx}?valueInputOption=USER_ENTERED`,
-      { values: [row] }
-    );
-    // Ažuriraj lokalni state
-    Object.assign(lead, updates);
-  } catch(e){
-    toast('Sheet write greška: ' + e.message, 'err', 5000);
-    throw e;
-  }
+  if(lead) Object.assign(lead, updates);
 }
 
 // ─── LEADS LISTA ───────────────────────────────────────────────────────────
@@ -680,7 +537,7 @@ function renderLeads(){
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
         <span class="contact-status ${statusCls}">${statusLabel}</span>
-        ${l.claimed_by && l.claimed_by !== currentUser ? `<span class="contact-status" style="color:var(--red)">🔒 ${l.claimed_by}</span>` : ''}
+        ${l.claimed_by ? `<span class="contact-status" style="color:var(--red)">🔒 ${l.claimed_by}</span>` : ''}
       </div>
     `;
     row.addEventListener('click', () => selectLead(l.lead_id));
@@ -692,31 +549,26 @@ async function selectLead(id){
   const lead = leads.find(l => l.lead_id === id);
   if(!lead) return;
 
-  // Lead učitan iz URL parametara nema _rowIndex — dohvati ga iz Sheeta
-  if(!lead._rowIndex){
-    if(!accessToken){
-      toast('Prijavite se u Google da biste nastavili.', 'err', 5000);
+  // Lead učitan iz URL parametara može imati nepotpune podatke — dohvati iz API-a
+  if(!lead._fullyLoaded){
+    if(!apiKey){
+      toast('API ključ nije postavljen.', 'err', 5000);
       return;
     }
-    sheetsStatus('Tražim lead u Sheetu...', 'info');
+    sheetsStatus('Tražim lead...', 'info');
     try{
-      const found = await lookupRowByLeadId(id);
-      if(!found){
-        sheetsStatus('Lead nije pronađen u Sheetu.', 'err');
-        toast('Lead nije pronađen u Sheetu — klikni ↻ Učitaj iz Sheeta.', 'err', 7000);
-        return; // blokira nastavak — nema gdje pisati
-      }
-      lead._rowIndex  = found.rowIndex;
-      lead.status     = found.status;
-      lead.claimed_by = found.claimed_by;
+      const found = await apiRequest('GET', `/api/leads/${encodeURIComponent(id)}`);
+      lead._fullyLoaded = true;
+      lead.status       = found.status        || lead.status;
+      lead.claimed_by   = found.claimed_by    || lead.claimed_by;
       if(found.vlasnik) lead.vlasnik = found.vlasnik;
       if(found.opis)    lead.opis    = found.opis;
       if(found.telefon) lead.telefon = found.telefon;
-      sheetsStatus(`Pronađeno (red ${found.rowIndex}).`, 'ok');
+      sheetsStatus('Pronađeno.', 'ok');
     } catch(e){
-      sheetsStatus('Greška dohvaćanja iz Sheeta: ' + e.message, 'err');
-      toast('Greška Sheets lookupa — klikni ↻ Učitaj iz Sheeta.', 'err', 7000);
-      return; // blokira nastavak
+      sheetsStatus('Greška dohvaćanja: ' + e.message, 'err');
+      toast('Lead nije pronađen u API-u — klikni ↻ Učitaj iz Sheeta.', 'err', 7000);
+      return;
     }
   }
 
@@ -725,7 +577,7 @@ async function selectLead(id){
     try{
       await writeToSheet(id, {
         status: 'in_progress',
-        claimed_by: currentUser || 'Nepoznato',
+        claimed_by: 'Korisnik',
       });
       lead.status = 'in_progress';
       toast('Lead zauzet — status: in_progress');
@@ -746,183 +598,26 @@ async function selectLead(id){
 
 // ─── FIXED PITCH VERSIONS ──────────────────────────────────────────────────
 
-async function pitchesLoad(){
-  const raw = await storeGet('fixed-pitches');
-  if(raw){ try{ return JSON.parse(raw); }catch{} }
-  return null;
-}
-async function pitchesSave(list){
-  pitches = list;
-  try{ await storeSet('fixed-pitches', JSON.stringify(list)); }catch{}
-}
-async function pitchActiveIdGet(){ return (await storeGet('fixed-pitch-active-id')) || null; }
-async function pitchActiveIdSet(id){
-  activePitchId = id || null;
-  try{ await storeSet('fixed-pitch-active-id', id || ''); }catch{}
-}
-
-// ─── FIXED PITCHES — SHEET BACKEND ─────────────────────────────────────────
-
-function _fpSetSaving(busy){
-  const el = $('fpSaveStatus');
-  if(el) el.style.display = busy ? 'inline' : 'none';
-  // Onemogući akcijske gumbe dok traje Sheet write (sprječava race condition)
-  document.querySelectorAll('.fp-delete, .fp-activate').forEach(b => { b.disabled = busy; });
-}
-
-function fpEnqueueWrite(){
-  // Ulančava fpWriteAll na serijski red — drugi poziv čeka kraj prvog.
-  // Eliminira mogućnost da dva concurrent clear+write-a prekriju jedan drugog.
-  _fpWriteQ = _fpWriteQ
-    .then(() => { _fpSetSaving(true); return fpWriteAll(); })
-    .then(() => _fpSetSaving(false))
-    .catch(e => { _fpSetSaving(false); toast('Sheet: ' + e.message, 'err', 3000); });
-}
-
-function _fpSplitAudio(mime, b64){
-  // Ako b64 stane u jedan chunk → data URL format (backward compat).
-  // Inače → marker 'chunk:<mime>' u glavnom redu, ostali chunkovi u extra redovima.
-  if(b64.length <= FP_CHUNK_SIZE)
-    return [{ suffix: '', cell: `data:${mime};base64,${b64}` }];
-  const parts = [{ suffix: '', cell: `chunk:${mime}` }];
-  for(let i = 0, n = 1; i < b64.length; i += FP_CHUNK_SIZE, n++)
-    parts.push({ suffix: `#${n}`, cell: b64.slice(i, i + FP_CHUNK_SIZE) });
-  return parts;
-}
-
-function _fpJoinAudio(mainCell, chunkCells){
-  if(mainCell.startsWith('data:')){
-    const m = mainCell.match(/^data:([^;]+);base64,([\s\S]*)$/);
-    return m ? { mime: m[1], b64: m[2] } : null;
-  }
-  if(mainCell.startsWith('chunk:')){
-    return { mime: mainCell.slice(6), b64: chunkCells.join('') };
-  }
-  return null;
-}
-
-async function fpEnsureTab(){
-  try{
-    await sheetsRequest('GET', `/values/${FP_TAB}!A1:A1`);
-  }catch(e){
-    if(!e.message?.includes('400')) throw e;
-    // Tab ne postoji — kreiraj ga s headerom
-    await sheetsRequest('POST', ':batchUpdate', {
-      requests:[{ addSheet:{ properties:{ title: FP_TAB } } }]
-    });
-    await sheetsRequest('PUT',
-      `/values/${FP_TAB}!A1:F1?valueInputOption=USER_ENTERED`,
-      { values:[['pitch_id','naziv','audio_data_url','spremio','datum_spremanja','aktivan']] }
-    );
-  }
-}
-
-async function fpWriteAll(){
-  // Očisti stare podatke (uključujući sve chunk redove), pa upiši listu.
-  await sheetsRequest('POST', `/values/${FP_TAB}!A2:F9999:clear`, {});
-  if(!pitches.length) return;
-  const rows = [];
-  for(const p of pitches){
-    const parts = _fpSplitAudio(p.audio.mime, p.audio.b64);
-    // Glavni red (chunk 0 ili cijeli audio ako stane u jedan chunk)
-    rows.push([
-      p.id,
-      p.naziv,
-      parts[0].cell,
-      p.spremio || currentUserEmail || '',
-      p.datum_spremanja || '',
-      p.id === activePitchId ? 'DA' : 'NE',
-    ]);
-    // Extra chunk redovi (ako je audio prevelik za jednu ćeliju)
-    for(let i = 1; i < parts.length; i++)
-      rows.push([p.id + parts[i].suffix, '', parts[i].cell, '', '', '']);
-  }
-  await sheetsRequest('PUT',
-    `/values/${FP_TAB}!A2?valueInputOption=USER_ENTERED`,
-    { values: rows }
-  );
-}
-
-async function _fpMigrateFromLocal(){
-  // Vraća stare pitcheve iz localStorage (za migraciju na prvi Sheet sync)
-  try{
-    const raw = await storeGet('fixed-pitches');
-    if(raw){
-      const list = JSON.parse(raw);
-      if(Array.isArray(list) && list.length) return list;
-    }
-    const oldRaw = await storeGet('fixed-pitch-audio');
-    if(oldRaw){
-      const {mime, b64} = JSON.parse(oldRaw);
-      return [{
-        id: 'migrated-' + Date.now(),
-        naziv: 'Pitch (migrirani)',
-        audio: {mime, b64},
-        datum_spremanja: new Date().toISOString(),
-      }];
-    }
-  }catch{}
-  return [];
-}
-
 async function fpSync(){
-  // Učitaj pitcheve iz Sheeta, ažuriraj in-memory state i UI.
-  // Zove se pri prijavi. Ako je Sheet prazan, migrira localStorage podatke.
   const badge = $('fixedBadge');
   if(badge){ badge.textContent = 'Učitavam…'; badge.className = 'badge'; }
-  await fpEnsureTab();
-  let sheetData;
   try{
-    sheetData = await sheetsRequest('GET', `/values/${FP_TAB}!A:F`);
-  }catch(e){
-    toast('Greška pri čitanju pitcheva iz Sheeta: ' + e.message, 'err', 4000);
-    return;
-  }
-  const rows = (sheetData.values || []).slice(1); // preskači header
-
-  if(rows.length === 0){
-    // Tab je prazan — pokušaj migrirati podatke iz localStorage
-    const migrated = await _fpMigrateFromLocal();
-    if(migrated.length){
-      pitches = migrated;
-      activePitchId = pitches[0]?.id || null;
-      await fpWriteAll();
-      toast(`Migrirano ${pitches.length} ${pitches.length === 1 ? 'pitch' : 'pitcheva'} u Sheet`);
-    }
-  } else {
-    // Razdvoji glavne redove od chunk redova (pitch_id sadrži '#N')
-    const mainRows = [];
-    const chunkMap = new Map(); // baseId → array indexirana po (N-1)
-    for(const r of rows){
-      const id = r[0] || '';
-      const m = id.match(/^(.+)#(\d+)$/);
-      if(m){
-        const [, baseId, n] = m;
-        if(!chunkMap.has(baseId)) chunkMap.set(baseId, []);
-        chunkMap.get(baseId)[parseInt(n) - 1] = r[2] || '';
-      } else if(id){
-        mainRows.push(r);
-      }
-    }
-    pitches = mainRows.map(r => {
-      const audio = _fpJoinAudio(r[2] || '', chunkMap.get(r[0]) || []);
-      if(!audio || !audio.b64) return null;
-      return {
-        id:              r[0],
-        naziv:           r[1] || 'Bez naziva',
-        audio,
-        spremio:         r[3] || '',
-        datum_spremanja: r[4] || '',
-        _aktivan:        (r[5] || 'NE').toUpperCase() === 'DA',
-      };
-    }).filter(Boolean);
-    const active = pitches.find(p => p._aktivan);
+    const data = await apiRequest('GET', '/api/fixed-pitches');
+    pitches = data.map(p => ({
+      id:              p.id,
+      naziv:           p.naziv,
+      audio:           { mime: p.mime, b64: p.b64 },
+      datum_spremanja: p.datum_spremanja,
+      spremio:         p.spremio,
+    }));
+    const active = data.find(p => p.active);
     activePitchId = active?.id || pitches[0]?.id || null;
-    pitches.forEach(p => delete p._aktivan);
+    await syncActivePitchToBlob();
+    renderPitchList();
+  } catch(e){
+    toast('Greška pri učitavanju pitcheva: ' + e.message, 'err', 4000);
+    if(badge){ badge.textContent = 'nije postavljen'; badge.className = 'badge'; }
   }
-
-  await syncActivePitchToBlob();
-  renderPitchList();
 }
 
 function setFixedBadge(ok, naziv){
@@ -974,48 +669,57 @@ function renderPitchList(){
 }
 
 async function setActivePitch(id){
-  activePitchId = id;
-  await pitchActiveIdSet(id);
-  await syncActivePitchToBlob();
-  renderPitchList();
-  toast('Aktivna verzija: ' + (pitches.find(p => p.id === id)?.naziv || ''));
-  if(accessToken) fpEnqueueWrite();
+  const btn = document.querySelector(`.fp-activate[data-id="${id}"]`);
+  if(btn) btn.disabled = true;
+  try{
+    await apiRequest('POST', `/api/fixed-pitches/${encodeURIComponent(id)}/activate`);
+    activePitchId = id;
+    await syncActivePitchToBlob();
+    renderPitchList();
+    toast('Aktivna verzija: ' + (pitches.find(p => p.id === id)?.naziv || ''));
+  } catch(e){
+    toast('Greška aktivacije: ' + e.message, 'err', 4000);
+    if(btn) btn.disabled = false;
+  }
 }
 
 async function confirmDeletePitch(id){
   const p = pitches.find(p => p.id === id);
   if(!p) return;
   if(!confirm(`Obrisati verziju "${p.naziv}"?`)) return;
-  pitches = pitches.filter(x => x.id !== id);
-  await pitchesSave(pitches);
-  if(activePitchId === id){
-    activePitchId = pitches[0]?.id || null;
-    await pitchActiveIdSet(activePitchId || '');
+  const btn = document.querySelector(`.fp-delete[data-id="${id}"]`);
+  if(btn) btn.disabled = true;
+  try{
+    await apiRequest('DELETE', `/api/fixed-pitches/${encodeURIComponent(id)}`);
+    pitches = pitches.filter(x => x.id !== id);
+    if(activePitchId === id) activePitchId = pitches[0]?.id || null;
+    await syncActivePitchToBlob();
+    renderPitchList();
+    toast(pitches.length ? 'Verzija obrisana.' : 'Sve verzije obrisane.', pitches.length ? 'ok' : 'err');
+  } catch(e){
+    toast('Greška brisanja: ' + e.message, 'err', 4000);
+    if(btn) btn.disabled = false;
   }
-  await syncActivePitchToBlob();
-  renderPitchList();
-  toast(pitches.length ? 'Verzija obrisana.' : 'Sve verzije obrisane.', pitches.length ? 'ok' : 'err');
-  if(accessToken) fpEnqueueWrite();
 }
 
 async function saveNewPitch(blob, mime, naziv){
   const b64 = await blobToBase64(blob);
-  // Informativno upozorenje za jako velike fajlove (neće blokirati — koristimo chunking)
-  const chunks = Math.ceil(b64.length / FP_CHUNK_SIZE);
-  if(chunks > 1)
-    toast(`Audio će biti pohranjen u ${chunks} chunkova (${Math.round(b64.length/1000)}k znakova)`, 'info', 3000);
-  const id = Date.now().toString();
-  pitches.push({
-    id, naziv,
-    audio: {mime, b64},
-    datum_spremanja: new Date().toISOString(),
-  });
-  await pitchesSave(pitches);
-  if(!activePitchId){ activePitchId = id; await pitchActiveIdSet(id); }
-  await syncActivePitchToBlob();
-  renderPitchList();
-  if(accessToken) fpEnqueueWrite();
-  return true;
+  try{
+    const result = await apiRequest('POST', '/api/fixed-pitches', { naziv, mime, b64 });
+    pitches.push({
+      id:              result.id,
+      naziv:           result.naziv,
+      audio:           { mime: result.mime || mime, b64 },
+      datum_spremanja: result.datum_spremanja,
+    });
+    if(!activePitchId || result.active) activePitchId = result.id;
+    await syncActivePitchToBlob();
+    renderPitchList();
+    return true;
+  } catch(e){
+    toast('Greška spremanja pitcha: ' + e.message, 'err', 5000);
+    return false;
+  }
 }
 
 function resetPendingFixed(){
@@ -1088,33 +792,10 @@ $('fixedSaveNewBtn').addEventListener('click', async () => {
 
 $('fixedRecDiscardBtn').addEventListener('click', resetPendingFixed);
 
-// Init — učitaj sve verzije iz pohrane
+// Init — pitchevi se učitavaju iz API-a pri fpSync(); ova funkcija samo resetira UI
 async function loadPitchesFromStorage(){
-  let list = await pitchesLoad();
-
-  // Migracija: stari format (jedna vrijednost) → novi (lista)
-  if(!list){
-    const oldRaw = await storeGet('fixed-pitch-audio');
-    if(oldRaw){
-      try{
-        const {mime, b64} = JSON.parse(oldRaw);
-        list = [{id:'migrated', naziv:'Pitch (migrirani)', audio:{mime,b64},
-                  datum_spremanja: new Date().toISOString()}];
-        await pitchesSave(list);
-      }catch{}
-    }
-  }
-
-  pitches = list || [];
-  activePitchId = await pitchActiveIdGet();
-
-  // Validiraj: aktivni id mora biti u listi
-  if(activePitchId && !pitches.find(p => p.id === activePitchId))
-    activePitchId = pitches[0]?.id || null;
-  if(pitches.length && !activePitchId)
-    activePitchId = pitches[0].id;
-  if(activePitchId) await pitchActiveIdSet(activePitchId);
-
+  pitches = [];
+  activePitchId = null;
   await syncActivePitchToBlob();
   renderPitchList();
 }
@@ -1228,7 +909,7 @@ $('stitchBtn').addEventListener('click', async () => {
       $('finalRow').style.display = 'flex';
 
       // Upiši audio_ready + obradjen_flag=DA u Sheet
-      if(lead && accessToken){
+      if(lead && apiKey){
         try{
           await writeToSheet(activeId, {status: 'audio_ready', obradjen_flag: 'DA'});
           lead.status = 'audio_ready';
@@ -1256,7 +937,7 @@ $('markSentBtn').addEventListener('click', async () => {
   const lead = leads.find(l => l.lead_id === activeId);
   if(!lead) return;
 
-  if(accessToken){
+  if(apiKey){
     try{
       await writeToSheet(activeId, {
         status: 'sent',
@@ -1269,7 +950,7 @@ $('markSentBtn').addEventListener('click', async () => {
       toast('Greška upisa: ' + e.message, 'err');
     }
   } else {
-    toast('Nije prijavljeno — Sheet nije ažuriran', 'err');
+    toast('API ključ nije postavljen — Sheet nije ažuriran', 'err');
   }
 });
 
@@ -1440,13 +1121,12 @@ async function exportVCF(){
   showDispatchStatus(statusEl, 'Dohvaćam podatke iz Sheeta...', 'info');
   $('exportVcfBtn').disabled = true;
   try{
-    if(!accessToken) throw new Error('Prijavite se u Google (Voice Stitcher tab) da biste mogli exportati.');
-    const data = await sheetsRequest('GET', `/values/'${SHEET_TAB}'!A:R`);
-    const rows = (data.values || []).slice(1); // preskoči header
+    if(!apiKey) throw new Error('API ključ nije postavljen.');
+    const rows = await apiRequest('GET', '/api/leads');
 
     const contacts = rows.filter(r =>
-      (r[COL.status] || '') === 'qualified' &&
-      (r[COL.obradjen_flag] || '') === 'NE'
+      (r.status || '') === 'qualified' &&
+      (r.obradjen_flag || '') === 'NE'
     );
 
     if(!contacts.length){
@@ -1455,11 +1135,11 @@ async function exportVCF(){
     }
 
     const cards = contacts.map(r => {
-      const vlasnik = vcfEscape(r[COL.vlasnik] || '');
-      const naziv   = vcfEscape(r[COL.naziv_firme] || '');
-      const telefon = (r[COL.telefon] || '').trim().replace(/'/g, ''); // makni apostrofni prefix
-      const grad    = vcfEscape(r[COL.grad] || '');
-      const opis    = vcfEscape((r[COL.opis] || '').slice(0, 120));
+      const vlasnik = vcfEscape(r.vlasnik || '');
+      const naziv   = vcfEscape(r.naziv_firme || '');
+      const telefon = (r.telefon || '').trim().replace(/'/g, '');
+      const grad    = vcfEscape(r.grad || '');
+      const opis    = vcfEscape((r.opis || '').slice(0, 120));
       const note    = [grad, opis].filter(Boolean).join('. ');
       const fn      = vlasnik || naziv;
 
@@ -1510,50 +1190,13 @@ $('tabBtnPipeline').addEventListener('click', () => switchTab('pipeline'));
 
 // ─── INIT ──────────────────────────────────────────────────────────────────
 (async function init(){
-  // Obnovi korisničko ime iz prethodne sesije (za prikaz pri tihoj prijavi)
-  try{
-    currentUser = localStorage.getItem('fp_last_user') || null;
-    currentUserEmail = localStorage.getItem('fp_last_email') || null;
-  }catch{}
-
-  // Učitaj pitch iz lokalne pohrane (pre-auth fallback)
   await loadPitchesFromStorage();
+  await initApiKey();
 
-  // Inicijaliziraj Google Sign-In
-  // GSI skripta je async — čekaj da se učita
-  const waitGSI = () => new Promise(res => {
-    if(typeof google !== 'undefined' && google.accounts) { res(); return; }
-    const t = setInterval(() => {
-      if(typeof google !== 'undefined' && google.accounts){ clearInterval(t); res(); }
-    }, 100);
-    // Timeout nakon 10s
-    setTimeout(() => { clearInterval(t); res(); }, 10000);
-  });
-
-  await waitGSI();
-
-  if(typeof google !== 'undefined' && google.accounts){
-    initGSI();
-    // Auto-login ako postoji hint
-    google.accounts.id.prompt(notification => {
-      if(notification.isNotDisplayed() || notification.isSkippedMoment()){
-        // Korisnik nije prijavljen — button je vidljiv
-      }
-    });
-  } else {
-    $('sheetsStatus').style.display = 'block';
-    $('sheetsStatus').className = 'sheets-status err';
-    $('sheetsStatus').textContent = 'Google Sign-In nije dostupan — provjeri OAUTH_CLIENT_ID.';
-  }
-
-  // Provjeri PAT status (za Pipeline tab)
   const existingPat = await patGet();
   setPATBadge(!!existingPat);
 
-  // Render prazne liste
   renderLeads();
-
-  // Provjeri URL params (nakon što je lista prazna renderana)
   handleUrlParams();
 })();
 

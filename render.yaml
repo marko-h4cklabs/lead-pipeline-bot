@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: pipeline-api
+    runtime: python
+    buildCommand: pip install -r server/requirements.txt
+    startCommand: python -m uvicorn server.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: GOOGLE_SHEETS_ID
+        sync: false
+      - key: GOOGLE_SA_JSON_B64
+        sync: false
+      - key: API_KEY
+        sync: false
