@@ -59,6 +59,18 @@ def run(fix: bool = False) -> None:
         if worst_sim < NAME_SIMILARITY_THRESHOLD:
             collisions.append((oib, group, worst_sim))
 
+    # Prikaži raspodjelu redova po statusu — potvrda da su rejected uključeni
+    status_dist: dict[str, int] = {}
+    for row in all_rows:
+        s = row.get("status", "(prazno)")
+        status_dist[s] = status_dist.get(s, 0) + 1
+    log.info("Raspodjela statusa: %s", status_dist)
+    rows_with_oib = sum(
+        1 for row in all_rows
+        if len(row.get("oib", "").strip().lstrip("'")) >= 8
+    )
+    log.info("Redova s OIB-om (svi statusi): %d / %d", rows_with_oib, len(all_rows))
+
     if not collisions:
         log.info("✓ Nema OIB/naziv kolizija u Sheetu. Svi OIB-ovi su konzistentni.")
         return
@@ -80,32 +92,25 @@ def run(fix: bool = False) -> None:
         print()
 
     print(f"Ukupno zahvaćenih redova: {total_affected}")
-    print(f"Redovi s 'verified'/'qualified' statusom koji su možda netočni:")
-    risky = [
-        (oib, row)
-        for oib, group, _ in collisions
-        for row in group
-        if row.get("status") in ("verified", "qualified", "new")
-    ]
-    for oib, row in risky:
-        print(f"  !! OIB {oib}  [{row['lead_id']}]  {row.get('naziv_firme','')}  status={row.get('status','')}")
+    print(f"(Uključuje sve statuse — rejected, manual_review, verified, qualified, new)")
 
     if not fix:
         print(f"\nDRY RUN — nema izmjena. Pokreni s --fix za automatsku korekciju.")
         return
 
+    # --fix: sve kolidirujuće redove → manual_review, bez iznimke po statusu.
+    # Rejected red s pogrešnim OIB-om je možda pogrešno odbačen — mora na ručni pregled.
     print(f"\nPokrećem korekciju — {total_affected} redova → manual_review ...")
     fix_updates = []
     for oib, group, _ in collisions:
         names_str = " | ".join(r.get("naziv_firme", "?") for r in group)
         for row in group:
-            if row.get("status") == "rejected":
-                continue  # ne.diraj rejected redove
+            orig_status = row.get("status", "?")
             fix_updates.append({
                 "lead_id": row["lead_id"],
                 "status": "manual_review",
                 "opis": (
-                    f"Retroaktivna OIB kolizija (audit): OIB {oib} "
+                    f"Retroaktivna OIB kolizija (audit, bio: {orig_status}): OIB {oib} "
                     f"pronađen kod {len(group)} različitih firmi ({names_str}) — ručna provjera"
                 ),
             })
@@ -117,7 +122,7 @@ def run(fix: bool = False) -> None:
         except Exception as e:
             log.error("batch_update greška: %s", e)
     else:
-        log.info("Nema redova za korekciju (svi su već rejected).")
+        log.info("Nema redova za korekciju.")
 
 
 if __name__ == "__main__":
