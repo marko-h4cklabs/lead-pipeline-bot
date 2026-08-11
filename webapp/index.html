@@ -356,7 +356,7 @@ const SHEETS_ID         = '1ail8Ervy7SD_lap6GTc36Owh9Tdbq3mXjDvxMmxLz18';
 const SHEET_TAB         = 'Leads';
 const SHEETS_API_BASE   = 'https://sheets.googleapis.com/v4/spreadsheets';
 const FP_TAB            = 'FixedPitches';
-const FP_MAX_LEN        = 45000; // Google Sheets cell limit ~50k chars; buffer za sigurnost
+const FP_CHUNK_SIZE     = 38000; // max base64 chars per Sheet cell (~50k limit, buffer ostavljen)
 
 // Kolone (A=0, B=1, ...) — mora odgovarati shemi u sheets.py
 const COL = {
@@ -761,6 +761,28 @@ async function pitchActiveIdSet(id){
 
 // ─── FIXED PITCHES — SHEET BACKEND ─────────────────────────────────────────
 
+function _fpSplitAudio(mime, b64){
+  // Ako b64 stane u jedan chunk → data URL format (backward compat).
+  // Inače → marker 'chunk:<mime>' u glavnom redu, ostali chunkovi u extra redovima.
+  if(b64.length <= FP_CHUNK_SIZE)
+    return [{ suffix: '', cell: `data:${mime};base64,${b64}` }];
+  const parts = [{ suffix: '', cell: `chunk:${mime}` }];
+  for(let i = 0, n = 1; i < b64.length; i += FP_CHUNK_SIZE, n++)
+    parts.push({ suffix: `#${n}`, cell: b64.slice(i, i + FP_CHUNK_SIZE) });
+  return parts;
+}
+
+function _fpJoinAudio(mainCell, chunkCells){
+  if(mainCell.startsWith('data:')){
+    const m = mainCell.match(/^data:([^;]+);base64,([\s\S]*)$/);
+    return m ? { mime: m[1], b64: m[2] } : null;
+  }
+  if(mainCell.startsWith('chunk:')){
+    return { mime: mainCell.slice(6), b64: chunkCells.join('') };
+  }
+  return null;
+}
+
 async function fpEnsureTab(){
   try{
     await sheetsRequest('GET', `/values/${FP_TAB}!A1:A1`);
@@ -778,17 +800,25 @@ async function fpEnsureTab(){
 }
 
 async function fpWriteAll(){
-  // Očisti stare podatke pa upiši trenutnu listu
-  await sheetsRequest('POST', `/values/${FP_TAB}!A2:F999:clear`, {});
+  // Očisti stare podatke (uključujući sve chunk redove), pa upiši listu.
+  await sheetsRequest('POST', `/values/${FP_TAB}!A2:F9999:clear`, {});
   if(!pitches.length) return;
-  const rows = pitches.map(p => [
-    p.id,
-    p.naziv,
-    `data:${p.audio.mime};base64,${p.audio.b64}`,
-    p.spremio || currentUserEmail || '',
-    p.datum_spremanja || '',
-    p.id === activePitchId ? 'DA' : 'NE',
-  ]);
+  const rows = [];
+  for(const p of pitches){
+    const parts = _fpSplitAudio(p.audio.mime, p.audio.b64);
+    // Glavni red (chunk 0 ili cijeli audio ako stane u jedan chunk)
+    rows.push([
+      p.id,
+      p.naziv,
+      parts[0].cell,
+      p.spremio || currentUserEmail || '',
+      p.datum_spremanja || '',
+      p.id === activePitchId ? 'DA' : 'NE',
+    ]);
+    // Extra chunk redovi (ako je audio prevelik za jednu ćeliju)
+    for(let i = 1; i < parts.length; i++)
+      rows.push([p.id + parts[i].suffix, '', parts[i].cell, '', '', '']);
+  }
   await sheetsRequest('PUT',
     `/values/${FP_TAB}!A2?valueInputOption=USER_ENTERED`,
     { values: rows }
@@ -840,20 +870,32 @@ async function fpSync(){
       toast(`Migrirano ${pitches.length} ${pitches.length === 1 ? 'pitch' : 'pitcheva'} u Sheet`);
     }
   } else {
-    pitches = rows.map(r => {
-      const dataUrl = r[2] || '';
-      let mime = 'audio/ogg', b64 = '';
-      const m = dataUrl.match(/^data:([^;]+);base64,([\s\S]*)$/);
-      if(m){ mime = m[1]; b64 = m[2]; }
+    // Razdvoji glavne redove od chunk redova (pitch_id sadrži '#N')
+    const mainRows = [];
+    const chunkMap = new Map(); // baseId → array indexirana po (N-1)
+    for(const r of rows){
+      const id = r[0] || '';
+      const m = id.match(/^(.+)#(\d+)$/);
+      if(m){
+        const [, baseId, n] = m;
+        if(!chunkMap.has(baseId)) chunkMap.set(baseId, []);
+        chunkMap.get(baseId)[parseInt(n) - 1] = r[2] || '';
+      } else if(id){
+        mainRows.push(r);
+      }
+    }
+    pitches = mainRows.map(r => {
+      const audio = _fpJoinAudio(r[2] || '', chunkMap.get(r[0]) || []);
+      if(!audio || !audio.b64) return null;
       return {
-        id:              r[0] || String(Date.now()),
+        id:              r[0],
         naziv:           r[1] || 'Bez naziva',
-        audio:           { mime, b64 },
+        audio,
         spremio:         r[3] || '',
         datum_spremanja: r[4] || '',
         _aktivan:        (r[5] || 'NE').toUpperCase() === 'DA',
       };
-    }).filter(p => p.audio.b64);
+    }).filter(Boolean);
     const active = pitches.find(p => p._aktivan);
     activePitchId = active?.id || pitches[0]?.id || null;
     pitches.forEach(p => delete p._aktivan);
@@ -938,14 +980,10 @@ async function confirmDeletePitch(id){
 
 async function saveNewPitch(blob, mime, naziv){
   const b64 = await blobToBase64(blob);
-  const dataUrl = `data:${mime};base64,${b64}`;
-  if(dataUrl.length > FP_MAX_LEN){
-    toast(
-      `Audio preveć velik za Sheet (${Math.round(dataUrl.length/1000)}k > ${FP_MAX_LEN/1000}k znakova) — smanji trajanje snimke.`,
-      'err', 7000
-    );
-    return false;
-  }
+  // Informativno upozorenje za jako velike fajlove (neće blokirati — koristimo chunking)
+  const chunks = Math.ceil(b64.length / FP_CHUNK_SIZE);
+  if(chunks > 1)
+    toast(`Audio će biti pohranjen u ${chunks} chunkova (${Math.round(b64.length/1000)}k znakova)`, 'info', 3000);
   const id = Date.now().toString();
   pitches.push({
     id, naziv,
@@ -976,7 +1014,7 @@ $('fixedRecBtn').addEventListener('click', async () => {
   try{ fixedRecStream = await navigator.mediaDevices.getUserMedia({audio:true}); }
   catch(e){ alert('Nije moguće pristupiti mikrofonu: ' + e.message); return; }
   fixedRecChunks = [];
-  fixedRecMR = new MediaRecorder(fixedRecStream);
+  fixedRecMR = new MediaRecorder(fixedRecStream, { audioBitsPerSecond: 24000 });
   fixedRecMR.ondataavailable = e => { if(e.data.size) fixedRecChunks.push(e.data); };
   fixedRecMR.onstop = () => {
     fixedPendingBlob = new Blob(fixedRecChunks, {type: fixedRecMR.mimeType || 'audio/webm'});
