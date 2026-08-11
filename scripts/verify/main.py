@@ -36,6 +36,27 @@ MIN_REVENUE_EUR = int(os.environ.get("MIN_REVENUE_EUR", "0"))
 _max_rev_raw = os.environ.get("MAX_REVENUE_EUR", "").strip()
 MAX_REVENUE_EUR: int | None = int(_max_rev_raw) if _max_rev_raw else None
 
+# Nazivi stranih država koji NE smiju biti u opis/vlasnik polju HR leada.
+# Sekundarna heuristika: hvata kontaminaciju koja prođe pored CW foreign-check barijere
+# (npr. ako tekst dođe iz web-scrape umjesto CW stranice).
+_FOREIGN_COUNTRY_NAMES = frozenset({
+    "srbija", "republika srbija",
+    "bosna i hercegovina", "bosna", "republika srpska",
+    "slovenija",
+    "crna gora",
+    "makedonija", "sjeverna makedonija",
+    "albanija", "kosovo",
+})
+
+
+def _has_foreign_country(text: str) -> str | None:
+    """Vraća prvu nađenu stranu državu ako je tekst kontaminiran, inače None."""
+    t = (text or "").lower()
+    for country in _FOREIGN_COUNTRY_NAMES:
+        if country in t:
+            return country
+    return None
+
 
 def run():
     log.info("=== Verify start ===")
@@ -109,6 +130,23 @@ def run():
             processed += 1
 
             if not cw_data.get("_cw_found"):
+                # --- Inozemna firma na CW (RS/BA/SI/ME/MK) ---
+                if cw_data.get("_foreign"):
+                    marker = cw_data.get("_foreign_marker", "?")
+                    cw_url_found = cw_data.get("_cw_url", "?")
+                    log.error(
+                        "[%s] manual_review: CW vratio inozemnu firmu za '%s' "
+                        "(marker='%s', url=%s) — podatke NE upisujemo",
+                        lead_id, naziv, marker, cw_url_found,
+                    )
+                    updates["status"] = "manual_review"
+                    updates["opis"] = (
+                        f"CW lookup vratio inozemnu firmu (detektiran: '{marker}') "
+                        f"— ručna provjera (url: {cw_url_found})"
+                    )
+                    all_updates.append(updates)
+                    continue
+
                 # --- Faza 2b: name mismatch — CW search vratio krivu firmu ---
                 if cw_data.get("_name_mismatch"):
                     found_name = cw_data.get("_cw_found_name", "?")
@@ -248,6 +286,25 @@ def run():
                         log.debug("[%s] fallback opis: %s", lead_id, fallback)
                 except Exception as e:
                     log.warning("[%s] fallback opis greška: %s", lead_id, e)
+
+            # --- Sekundarna heuristika: opis/vlasnik ne smije sadržavati stranu državu ---
+            # Hvata kontaminaciju koja prođe CW barijeru (npr. iz web-scrape teksta).
+            for _field in ("vlasnik", "opis"):
+                _foreign = _has_foreign_country(updates.get(_field, ""))
+                if _foreign:
+                    log.error(
+                        "[%s] STRANA FIRMA u polju '%s': pronađeno '%s' — "
+                        "prebacujem u manual_review, brišem OIB/vlasnik/telefon",
+                        lead_id, _field, _foreign,
+                    )
+                    updates["status"] = "manual_review"
+                    updates["opis"] = (
+                        f"Sumnja na stranu firmu: polje '{_field}' sadrži '{_foreign}' "
+                        f"— ručna provjera"
+                    )
+                    for _fld in ("oib", "vlasnik", "telefon"):
+                        updates.pop(_fld, None)
+                    break
 
             log.info("[%s] → status: %s", lead_id, updates.get("status"))
             all_updates.append(updates)

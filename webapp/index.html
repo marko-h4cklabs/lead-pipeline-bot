@@ -673,7 +673,7 @@ function renderLeads(){
     row.innerHTML = `
       <div style="flex:1; min-width:0;">
         <div class="contact-name">${l.naziv}</div>
-        ${l.vlasnik ? `<div class="contact-owner">${l.vlasnik}</div>` : ''}
+        ${l.vlasnik ? `<div class="contact-owner"><span style="font-size:10px;text-transform:uppercase;letter-spacing:.5px;opacity:.6;">Vlasnik</span> ${l.vlasnik}</div>` : ''}
         ${l.opis ? `<div class="contact-desc">${l.opis.slice(0,80)}${l.opis.length>80?'…':''}</div>` : ''}
       </div>
       <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">

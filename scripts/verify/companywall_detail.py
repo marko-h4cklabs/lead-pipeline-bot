@@ -28,6 +28,26 @@ SEARCH_URL = BASE + "/pretraga?q={q}"
 # Ispod praga → manual_review bez upisa OIB/kontakata
 NAME_SIMILARITY_THRESHOLD = 0.55
 
+# Markeri koji ukazuju na inozemnu (ne-HR) firmu na CW stranici.
+# CompanyWall indeksira firme iz RS, BA, SI, ME, MK — i za HR leade one su uvijek greška.
+FOREIGN_CW_MARKERS = frozenset({
+    "srbija",
+    "republika srbija",
+    "bosna i hercegovina",
+    "republika srpska",
+    "federacija bosne i hercegovine",
+    "slovenija",
+    "crna gora",
+    "makedonija",
+    "sjeverna makedonija",
+    "albanija",
+    "kosovo",
+    "registarski broj",  # srpski/bosanski poslovni registar (umjesto OIB-a)
+    "pib:",              # Poreski identifikacioni broj (srpski PDV ID)
+    "jib:",              # Jedinstveni identifikacioni broj (bosanski porezni ID)
+    "matični broj preduzeća",  # srpski MB
+})
+
 # Hrvatski mobilni prefiksi
 MOBILE_PREFIXES = {"091", "092", "095", "097", "098", "099"}
 
@@ -42,6 +62,18 @@ def _normalize_name(name: str) -> str:
     """Lowercase, ukloni pravni sufiks, normaliziraj whitespace."""
     n = _LEGAL_SUFFIXES.sub('', name.lower())
     return re.sub(r'\s+', ' ', n).strip()
+
+
+def _is_foreign_company(soup: BeautifulSoup) -> str | None:
+    """
+    Vraća nađeni marker (string) ako CW stranica pripada inozemnoj (ne-HR) firmi,
+    inače None. Koristi se kao rana barijera — HR firme uvijek imaju OIB, ne PIB/JIB/MB.
+    """
+    page_text = soup.get_text(separator=" ", strip=True).lower()
+    for marker in FOREIGN_CW_MARKERS:
+        if marker in page_text:
+            return marker
+    return None
 
 
 def name_similarity(a: str, b: str) -> float:
@@ -188,6 +220,7 @@ def _parse_detail_page(html: str) -> dict:
     status_badge = soup.select_one(".badge-success, .badge-danger, .badge-warning")
     is_active = (status_badge and "aktiv" in status_badge.get_text(strip=True).lower()) or not blocked
 
+    foreign_marker = _is_foreign_company(soup)
     return {
         "oib": oib,
         "vlasnik": vlasnik,
@@ -198,6 +231,7 @@ def _parse_detail_page(html: str) -> dict:
         "cw_blocked": blocked,
         "cw_active": is_active,
         "_has_mobile": bool(telefon and _is_mobile(telefon)),
+        "_cw_foreign": foreign_marker,  # None za HR firme; string markera za inozemne
     }
 
 
@@ -290,6 +324,24 @@ def scrape_detail(lead: dict, limiter) -> dict:
             return {"_cw_found": False, "_cw_error": str(e)}
 
         data = _parse_detail_page(resp.text)
+
+        # Rana barijera: CW vratio stranicu inozemne firme (RS, BA, SI, ...).
+        # HR firme uvijek imaju OIB — prisustvo PIB/JIB/MB ili naziva strane države
+        # je siguran znak da smo udarili u krivi rezultat CW pretrage.
+        foreign_marker = data.get("_cw_foreign")
+        if foreign_marker:
+            log.warning(
+                "CW inozemna firma za '%s' — detektiran marker '%s' na %s "
+                "— vraćam _cw_found=False",
+                lead.get("naziv_firme"), foreign_marker, cw_url,
+            )
+            return {
+                "_cw_found": False,
+                "_foreign": True,
+                "_foreign_marker": foreign_marker,
+                "_cw_url": cw_url,
+            }
+
         data["_cw_found"] = True
         data["_cw_url"] = cw_url
         data["_via_name_search"] = via_name_search
