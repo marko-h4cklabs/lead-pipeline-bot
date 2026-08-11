@@ -1,0 +1,44 @@
+name: Audit OIB Collisions
+
+on:
+  workflow_dispatch:
+    inputs:
+      fix:
+        description: 'Prebaci kolidirujuće redove u manual_review (false = samo izvještaj)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write   # potrebno za Workload Identity Federation OIDC token
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/401516118047/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider"
+          service_account: "lead-pipeline-bot@lead-scraper-august.iam.gserviceaccount.com"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Audit OIB Collisions
+        env:
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+        run: |
+          if [[ "${{ inputs.fix }}" == "true" ]]; then
+            python -m scripts.audit_oib_collisions --fix
+          else
+            python -m scripts.audit_oib_collisions
+          fi
