@@ -163,6 +163,7 @@
   <div class="panel" id="fixedPanel">
     <div class="panel-title">
       <span>01 — fiksni dio pitcha</span>
+      <span id="fpSaveStatus" style="display:none; font-size:10px; font-family:var(--mono); opacity:.7; letter-spacing:.4px; margin-right:4px;">↑ sprema…</span>
       <span class="badge" id="fixedBadge">nije postavljen</span>
     </div>
     <!-- Dodaj novu verziju: snimanje ili upload -->
@@ -387,6 +388,7 @@ let tokenClient = null;
 let silentAuthInProgress = false;
 let currentUser = null;
 let currentUserEmail = null;
+let _fpWriteQ = Promise.resolve(); // serializira fpWriteAll pozive — nema concurrent clear+write
 let leads = [];      // [{lead_id, naziv, vlasnik, opis, status, _row}, ...]
 let activeId = null;
 let fixedBlob = null, fixedMime = null; // aktivna verzija — sync iz pitches[]
@@ -761,6 +763,22 @@ async function pitchActiveIdSet(id){
 
 // ─── FIXED PITCHES — SHEET BACKEND ─────────────────────────────────────────
 
+function _fpSetSaving(busy){
+  const el = $('fpSaveStatus');
+  if(el) el.style.display = busy ? 'inline' : 'none';
+  // Onemogući akcijske gumbe dok traje Sheet write (sprječava race condition)
+  document.querySelectorAll('.fp-delete, .fp-activate').forEach(b => { b.disabled = busy; });
+}
+
+function fpEnqueueWrite(){
+  // Ulančava fpWriteAll na serijski red — drugi poziv čeka kraj prvog.
+  // Eliminira mogućnost da dva concurrent clear+write-a prekriju jedan drugog.
+  _fpWriteQ = _fpWriteQ
+    .then(() => { _fpSetSaving(true); return fpWriteAll(); })
+    .then(() => _fpSetSaving(false))
+    .catch(e => { _fpSetSaving(false); toast('Sheet: ' + e.message, 'err', 3000); });
+}
+
 function _fpSplitAudio(mime, b64){
   // Ako b64 stane u jedan chunk → data URL format (backward compat).
   // Inače → marker 'chunk:<mime>' u glavnom redu, ostali chunkovi u extra redovima.
@@ -850,6 +868,8 @@ async function _fpMigrateFromLocal(){
 async function fpSync(){
   // Učitaj pitcheve iz Sheeta, ažuriraj in-memory state i UI.
   // Zove se pri prijavi. Ako je Sheet prazan, migrira localStorage podatke.
+  const badge = $('fixedBadge');
+  if(badge){ badge.textContent = 'Učitavam…'; badge.className = 'badge'; }
   await fpEnsureTab();
   let sheetData;
   try{
@@ -959,7 +979,7 @@ async function setActivePitch(id){
   await syncActivePitchToBlob();
   renderPitchList();
   toast('Aktivna verzija: ' + (pitches.find(p => p.id === id)?.naziv || ''));
-  if(accessToken) fpWriteAll().catch(e => toast('Sheet: ' + e.message, 'err', 3000));
+  if(accessToken) fpEnqueueWrite();
 }
 
 async function confirmDeletePitch(id){
@@ -975,7 +995,7 @@ async function confirmDeletePitch(id){
   await syncActivePitchToBlob();
   renderPitchList();
   toast(pitches.length ? 'Verzija obrisana.' : 'Sve verzije obrisane.', pitches.length ? 'ok' : 'err');
-  if(accessToken) fpWriteAll().catch(e => toast('Sheet: ' + e.message, 'err', 3000));
+  if(accessToken) fpEnqueueWrite();
 }
 
 async function saveNewPitch(blob, mime, naziv){
@@ -994,7 +1014,7 @@ async function saveNewPitch(blob, mime, naziv){
   if(!activePitchId){ activePitchId = id; await pitchActiveIdSet(id); }
   await syncActivePitchToBlob();
   renderPitchList();
-  if(accessToken) fpWriteAll().catch(e => toast('Sheet: ' + e.message, 'err', 3000));
+  if(accessToken) fpEnqueueWrite();
   return true;
 }
 
@@ -1053,12 +1073,16 @@ $('fixedFile').addEventListener('change', () => {
 // Spremi novu verziju
 $('fixedSaveNewBtn').addEventListener('click', async () => {
   if(!fixedPendingBlob) return;
+  const btn = $('fixedSaveNewBtn');
+  if(btn.disabled) return;
+  btn.disabled = true;
   const naziv = $('fixedNazivInput').value.trim()
     || ('Pitch ' + new Date().toLocaleDateString('hr-HR'));
-  const ok = await saveNewPitch(fixedPendingBlob, fixedPendingMime, naziv);
-  if(ok !== false){
-    resetPendingFixed();
-    toast('Verzija "' + naziv + '" spremljena');
+  try {
+    const ok = await saveNewPitch(fixedPendingBlob, fixedPendingMime, naziv);
+    if(ok !== false){ resetPendingFixed(); toast('Verzija "' + naziv + '" spremljena'); }
+  } finally {
+    btn.disabled = false;
   }
 });
 
