@@ -16,6 +16,7 @@ Pokretanje (lokalno s ADC-om):
 import argparse
 import logging
 import os
+import re
 import sys
 from collections import defaultdict
 
@@ -38,12 +39,34 @@ def run(fix: bool = False) -> None:
     all_rows = client.read_all()
     log.info("Ukupno redova: %d", len(all_rows))
 
-    # Grupiraj po OIB-u (ignoriraj prazne / kratke OIB-ove)
+    # Grupiraj po OIB-u.
+    # Normalizacija: samo znamenke — čuva ispravnost bez obzira na to
+    # je li OIB pohranjen kao tekst ('49158465116), broj (49158465116)
+    # ili lokalizirani broj s tisućicama (49.158.465.116 u HR formatu).
     oib_groups: dict[str, list] = defaultdict(list)
+    rows_no_oib = 0
     for row in all_rows:
-        oib = row.get("oib", "").strip().lstrip("'")
-        if oib and len(oib) >= 8:
+        raw_oib = row.get("oib", "")
+        oib = re.sub(r"\D", "", str(raw_oib))  # samo znamenke
+        if len(oib) >= 8:
             oib_groups[oib].append(row)
+        else:
+            rows_no_oib += 1
+            if raw_oib:  # ima nešto, ali nije prošlo filter — logiraj za dijagnozu
+                log.debug("Preskočen OIB '%s' (raw: %r) za lead %s", oib, raw_oib, row.get("lead_id"))
+    log.info("OIB group statistika: %d jedinstvenih OIB-ova, %d redova bez OIB-a", len(oib_groups), rows_no_oib)
+
+    # Dijagnostički ispis: redovi koji TREBAJU biti zahvaćeni (po lead_id)
+    watch_ids = {"94c4a9ab", "5204cf6c", "f314daed"}
+    for row in all_rows:
+        if row.get("lead_id", "") in watch_ids:
+            raw_oib = row.get("oib", "")
+            oib_key = re.sub(r"\D", "", str(raw_oib))
+            log.info(
+                "WATCH [%s] '%s' status=%s oib_raw=%r oib_key=%r group_size=%d",
+                row.get("lead_id"), row.get("naziv_firme"), row.get("status"),
+                raw_oib, oib_key, len(oib_groups.get(oib_key, [])),
+            )
 
     collisions = []
     for oib, group in oib_groups.items():
@@ -67,7 +90,7 @@ def run(fix: bool = False) -> None:
     log.info("Raspodjela statusa: %s", status_dist)
     rows_with_oib = sum(
         1 for row in all_rows
-        if len(row.get("oib", "").strip().lstrip("'")) >= 8
+        if len(re.sub(r"\D", "", str(row.get("oib", "")))) >= 8
     )
     log.info("Redova s OIB-om (svi statusi): %d / %d", rows_with_oib, len(all_rows))
 
