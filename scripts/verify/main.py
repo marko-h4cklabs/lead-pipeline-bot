@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from scripts.lib.rate_limit import RateLimiter, rate_limited_session, BatchPausedException
 from scripts.lib.sheets import SheetsClient
-from scripts.verify.companywall_detail import scrape_detail
+from scripts.verify.companywall_detail import scrape_detail, name_similarity, NAME_SIMILARITY_THRESHOLD
 from scripts.verify.provjera_hr import check_company
 from scripts.verify.web_scan import scan_website, extract_homepage_text
 from scripts.verify.claude_summary import generate_opis, generate_opis_fallback
@@ -66,6 +66,8 @@ def run():
     limiter = RateLimiter(max_per_run=MAX_PER_RUN * 4)
     all_updates: list[dict] = []
     processed = 0
+    # Faza 2c: in-batch OIB praćenje — oib → (lead_id, naziv_firme)
+    batch_oib_assignments: dict[str, tuple[str, str]] = {}
 
     with rate_limited_session(max_per_run=MAX_PER_RUN * 3) as (session, _):
         for row in new_rows:
@@ -107,6 +109,22 @@ def run():
             processed += 1
 
             if not cw_data.get("_cw_found"):
+                # --- Faza 2b: name mismatch — CW search vratio krivu firmu ---
+                if cw_data.get("_name_mismatch"):
+                    found_name = cw_data.get("_cw_found_name", "?")
+                    sim = cw_data.get("_similarity", 0.0)
+                    log.warning(
+                        "[%s] manual_review: CW naziv ne odgovara '%s' ↔ '%s' (sličnost=%.0f%%)",
+                        lead_id, naziv, found_name, sim * 100,
+                    )
+                    updates["status"] = "manual_review"
+                    updates["opis"] = (
+                        f"CW lookup nesiguran: pronađeno '{found_name}' ≠ traženo '{naziv}' "
+                        f"({sim:.0%} sličnost) — ručna provjera"
+                    )
+                    all_updates.append(updates)
+                    continue
+
                 # --- Fallback: provjera.hr ---
                 log.info("[%s] CW nije našao '%s' — pokušavam provjera.hr", lead_id, naziv)
                 try:
@@ -129,6 +147,37 @@ def run():
                 continue
 
             # --- Firma nađena na CW ---
+
+            # Provjera 0 (Faza 2c): in-batch OIB kolizija — mora biti prva provjera
+            oib_candidate = cw_data.get("oib", "").strip().lstrip("'")
+            if oib_candidate and len(oib_candidate) >= 8:
+                existing_assignment = batch_oib_assignments.get(oib_candidate)
+                if existing_assignment:
+                    existing_lid, existing_naziv = existing_assignment
+                    log.error(
+                        "OIB KOLIZIJA UNUTAR BATCHA: OIB %s dodijeljen '%s' (%s) I '%s' (%s) "
+                        "— oba → manual_review",
+                        oib_candidate, existing_naziv, existing_lid, naziv, lead_id,
+                    )
+                    # Retroaktivno popravi prethodni zapis — makni OIB/kontakte jer im ne vjerujemo
+                    for prev in all_updates:
+                        if prev.get("lead_id") == existing_lid:
+                            prev["status"] = "manual_review"
+                            prev["opis"] = (
+                                f"OIB kolizija unutar batcha: OIB {oib_candidate} "
+                                f"konflikt s {lead_id} ({naziv}) — ručna provjera"
+                            )
+                            for field in ("oib", "vlasnik", "telefon"):
+                                prev.pop(field, None)
+                            break
+                    updates["status"] = "manual_review"
+                    updates["opis"] = (
+                        f"OIB kolizija unutar batcha: OIB {oib_candidate} "
+                        f"konflikt s {existing_lid} ({existing_naziv}) — ručna provjera"
+                    )
+                    all_updates.append(updates)
+                    continue
+                batch_oib_assignments[oib_candidate] = (lead_id, naziv)
 
             # Provjera 1: blokada
             if cw_data.get("cw_blocked"):
@@ -224,12 +273,75 @@ def run():
             log.error("Batch update neuspješan nakon 3 pokušaja — podaci NISU upisani: %s", _last_err)
             return  # ne nastavljaj s dedupom, Sheet nije ažuriran
 
+    # --- Faza 3: Post-write safety net ---
+    # Provjera upravo zapisanih redova — zadnja linija obrane ako Faza 2 propusti nešto.
+    if all_updates:
+        _oib_safety_check(client, {upd["lead_id"] for upd in all_updates})
+
     # --- Sekundarni OIB dedupe ---
     # Collect nema OIB pa isti OIB može doći iz Places i CW odvojeno.
     # Ovaj pass se pokreće NAKON verify (koji upisuje OIB) da uhvati takve duplikate.
     _dedup_by_oib(client)
 
     log.info("=== Verify završen: %d obrađenih redova ===", processed)
+
+
+def _oib_safety_check(client, processed_lead_ids: set[str]) -> None:
+    """
+    Faza 3: post-write safety net.
+    Čita upravo zapisane redove i grupira po OIB-u.
+    Ako isti OIB ima različite nazive firmi → logička nemogućnost (OIB je jedinstven) →
+    hard error + prebacivanje u manual_review čak i ako su prošli kao verified/qualified.
+    """
+    from collections import defaultdict
+    all_rows = client.read_all()
+    processed_rows = [r for r in all_rows if r.get("lead_id") in processed_lead_ids]
+
+    oib_groups: dict[str, list] = defaultdict(list)
+    for row in processed_rows:
+        oib = row.get("oib", "").strip().lstrip("'")
+        if oib and len(oib) >= 8:
+            oib_groups[oib].append(row)
+
+    corrections = []
+    for oib, group in oib_groups.items():
+        if len(group) < 2:
+            continue
+        names = [r.get("naziv_firme", "") for r in group]
+        worst_sim = min(
+            name_similarity(names[i], names[j])
+            for i in range(len(names))
+            for j in range(i + 1, len(names))
+        )
+        if worst_sim >= NAME_SIMILARITY_THRESHOLD:
+            continue  # Legitimni duplikati iste firme — _dedup_by_oib ih rješava
+
+        lead_ids_str = ", ".join(r["lead_id"] for r in group)
+        names_str = ", ".join(f"'{n}'" for n in names)
+        log.error(
+            "FAZA 3 SAFETY NET: OIB %s → %d različitih firmi u batchu (%s) [sličnost=%.0f%%] "
+            "— prebacujem sve u manual_review",
+            oib, len(group), names_str, worst_sim * 100,
+        )
+        for row in group:
+            if row.get("status") not in ("manual_review", "rejected"):
+                corrections.append({
+                    "lead_id": row["lead_id"],
+                    "status": "manual_review",
+                    "opis": (
+                        f"Faza 3 safety net: OIB {oib} dodijeljen {len(group)} različitih firmi "
+                        f"({names_str}) — ručna provjera"
+                    ),
+                })
+
+    if corrections:
+        log.warning("Faza 3: ispravljam %d redova s OIB kolizijom u Sheetu", len(corrections))
+        try:
+            client.batch_update(corrections)
+        except Exception as e:
+            log.error("Faza 3 safety net batch_update greška: %s", e)
+    else:
+        log.info("Faza 3 safety net: nema OIB kolizija u upravo obrađenim redovima ✓")
 
 
 def _completeness(row: dict) -> int:
@@ -264,6 +376,18 @@ def _dedup_by_oib(client) -> None:
         keep = group[0]
         for dup in group[1:]:
             if dup.get("status") == "rejected":
+                continue
+            # Provjeri da je ovo pravi duplikat (ista firma, različiti redovi),
+            # a ne kolizija (različite firme s istim OIB-om = greška podataka).
+            # Kolizije bi trebale biti uhvaćene u Fazi 2c/3, ali osigurajmo se.
+            sim = name_similarity(keep.get("naziv_firme", ""), dup.get("naziv_firme", ""))
+            if sim < NAME_SIMILARITY_THRESHOLD:
+                log.warning(
+                    "OIB dedupe: OIB %s — '%s' i '%s' imaju sličnost=%.0f%% < %.0f%% "
+                    "→ nije duplikat nego kolizija podataka, preskačem dedupe",
+                    oib, keep.get("naziv_firme", ""), dup.get("naziv_firme", ""),
+                    sim * 100, NAME_SIMILARITY_THRESHOLD * 100,
+                )
                 continue
             log.info(
                 "OIB duplikat %s: zadržavam row %d (%s, score=%d), odbacujem row %d (%s, score=%d)",

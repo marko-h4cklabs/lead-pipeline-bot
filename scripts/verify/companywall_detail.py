@@ -11,6 +11,7 @@ Ako firma nije pronađena po CW URL-u, search po nazivu pa uzmi prvi rezultat.
 """
 import logging
 import re
+from difflib import SequenceMatcher
 from typing import Optional
 from urllib.parse import quote_plus, urljoin
 
@@ -23,8 +24,29 @@ log = logging.getLogger(__name__)
 BASE = "https://www.companywall.hr"
 SEARCH_URL = BASE + "/pretraga?q={q}"
 
+# Prag sličnosti naziva pri name-based CW lookup (SequenceMatcher ratio, 0–1)
+# Ispod praga → manual_review bez upisa OIB/kontakata
+NAME_SIMILARITY_THRESHOLD = 0.55
+
 # Hrvatski mobilni prefiksi
 MOBILE_PREFIXES = {"091", "092", "095", "097", "098", "099"}
+
+# Pravni sufiksi koji se ignoriraju pri usporedbi naziva firmi
+_LEGAL_SUFFIXES = re.compile(
+    r'\b(d\.?o\.?o|j\.?d\.?o\.?o|d\.?d|o\.?b\.?r|s\.?p|k\.?d|p\.?o\.?o|z\.?a\.?d|d\.?n\.?o)\.?\b',
+    re.IGNORECASE,
+)
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, ukloni pravni sufiks, normaliziraj whitespace."""
+    n = _LEGAL_SUFFIXES.sub('', name.lower())
+    return re.sub(r'\s+', ' ', n).strip()
+
+
+def name_similarity(a: str, b: str) -> float:
+    """SequenceMatcher ratio između normaliziranih naziva firmi (0.0–1.0)."""
+    return SequenceMatcher(None, _normalize_name(a), _normalize_name(b)).ratio()
 
 
 def _is_mobile(phone: str) -> bool:
@@ -179,20 +201,24 @@ def _parse_detail_page(html: str) -> dict:
     }
 
 
-def _find_cw_url_by_name(session, name: str) -> Optional[str]:
-    """Pretraga CW po imenu firme → URL prve detail stranice."""
+def _find_cw_url_by_name(session, name: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Pretraga CW po imenu firme.
+    Returns (cw_url, found_company_name) — oba None ako pretraga ne vrati rezultat.
+    """
     url = SEARCH_URL.format(q=quote_plus(name))
     try:
         resp = session.get(url, timeout=15)
         resp.raise_for_status()
     except Exception as e:
         log.warning("CW search by name '%s' greška: %s", name, e)
-        return None
+        return None, None
     soup = BeautifulSoup(resp.text, "html.parser")
     link = soup.select_one("h3.text-uppercase.m-0.text-bold a[href*='/tvrtka/']")
     if link:
-        return urljoin(BASE, link["href"])
-    return None
+        found_name = link.get_text(strip=True)
+        return urljoin(BASE, link["href"]), found_name
+    return None, None
 
 
 def scrape_detail(lead: dict, limiter) -> dict:
@@ -201,13 +227,20 @@ def scrape_detail(lead: dict, limiter) -> dict:
     Izlaz: enriched dict s CW podacima.
 
     Tok:
-      1. Ako lead ima cw_url → koristi direktno
-      2. Inače → search po nazivu → uzmi prvi rezultat
-      3. Scrape detail page
+      1. Ako lead ima cw_url / web s CW URL-om → koristi direktno (potvrđen izvor)
+      2. Inače → search po nazivu → provjera sličnosti → scrape (izveden izvor)
+
+    Sigurnosna provjera za izveden put:
+      Ako je name_similarity(traženi_naziv, pronađeni_naziv) < NAME_SIMILARITY_THRESHOLD,
+      vraća {"_cw_found": False, "_name_mismatch": True, ...} — caller ga tretira
+      kao manual_review bez upisa OIB/kontakata.
     """
     with rate_limited_session(max_per_run=999) as (session, _):
         # Odredi CW URL
         cw_url = lead.get("cw_url")
+        via_name_search = False
+        cw_found_name: Optional[str] = None
+
         if not cw_url:
             # Provjeri je li web kolona CW URL (iz collect faze)
             web = lead.get("web", "")
@@ -215,15 +248,29 @@ def scrape_detail(lead: dict, limiter) -> dict:
                 cw_url = web
 
         if not cw_url:
-            # Search po imenu
+            # Izveden put: search po imenu firme
             limiter.check_limit()
             limiter.wait()
             try:
-                cw_url = _find_cw_url_by_name(session, lead["naziv_firme"])
+                cw_url, cw_found_name = _find_cw_url_by_name(session, lead["naziv_firme"])
             except BatchPausedException:
                 raise
             if cw_url:
                 limiter.record_success()
+                via_name_search = True
+                # Provjera sličnosti naziva — prva barijera protiv pogrešnog matchanja
+                sim = name_similarity(lead["naziv_firme"], cw_found_name or "")
+                if sim < NAME_SIMILARITY_THRESHOLD:
+                    log.warning(
+                        "CW name mismatch za '%s' — pronađeno '%s' (sličnost=%.0f%% < %.0f%%) → manual_review",
+                        lead["naziv_firme"], cw_found_name, sim * 100, NAME_SIMILARITY_THRESHOLD * 100,
+                    )
+                    return {
+                        "_cw_found": False,
+                        "_name_mismatch": True,
+                        "_cw_found_name": cw_found_name,
+                        "_similarity": sim,
+                    }
 
         if not cw_url:
             log.info("CW: nije nađena firma '%s'", lead.get("naziv_firme"))
@@ -245,4 +292,7 @@ def scrape_detail(lead: dict, limiter) -> dict:
         data = _parse_detail_page(resp.text)
         data["_cw_found"] = True
         data["_cw_url"] = cw_url
+        data["_via_name_search"] = via_name_search
+        if cw_found_name:
+            data["_cw_found_name"] = cw_found_name
         return data
