@@ -1,0 +1,47 @@
+name: Audit — Geografska kontaminacija (opis/vlasnik)
+
+on:
+  workflow_dispatch:
+    inputs:
+      fix:
+        description: 'Automatski popravi pronađene redove (--fix)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Authenticate via Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Run audit
+        env:
+          GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+        run: |
+          FIX_FLAG=""
+          if [ "${{ github.event.inputs.fix }}" = "true" ]; then
+            FIX_FLAG="--fix"
+          fi
+          python -m scripts.audit_foreign_opis $FIX_FLAG
