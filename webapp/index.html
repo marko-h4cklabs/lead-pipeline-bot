@@ -59,6 +59,14 @@
   .rec-btn .ring{width:12px; height:12px; border-radius:50%; background:var(--red);}
   .rec-btn.recording .ring{animation:pulse 1s infinite;}
   @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.25;}}
+
+  /* Fixed pitch version list */
+  .fixed-version{background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:10px;}
+  .fixed-version.active{border-color:var(--teal); background:#0b1c1a;}
+  .fixed-version-header{display:flex; align-items:center; gap:8px; margin-bottom:2px;}
+  .fixed-version-name{font-weight:600; font-size:14px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .fp-active-label{font-family:var(--mono); font-size:11px; color:var(--teal); white-space:nowrap;}
+  #fixedVersionList audio{width:100%; margin:5px 0 4px;}
   .timer{font-family:var(--mono); font-size:13px; color:var(--text-dim);}
 
   .contact-list{display:flex; flex-direction:column; gap:6px; max-height:320px; overflow-y:auto;}
@@ -157,16 +165,25 @@
       <span>01 — fiksni dio pitcha</span>
       <span class="badge" id="fixedBadge">nije postavljen</span>
     </div>
-    <div id="fixedSetup">
-      <input type="file" id="fixedFile" accept="audio/*">
+    <!-- Dodaj novu verziju: snimanje ili upload -->
+    <div class="btn-row" style="margin-top:0; margin-bottom:6px;">
+      <button class="rec-btn btn-secondary" id="fixedRecBtn" style="font-size:13px; padding:9px 14px;">
+        <span class="ring"></span><span id="fixedRecLabel">Snimi novi</span>
+      </button>
+      <button class="btn-secondary" id="fixedUploadBtn" style="font-size:13px; padding:9px 14px;">Uploadaj fajl</button>
+      <input type="file" id="fixedFile" accept="audio/*" style="display:none;">
+      <span class="timer" id="fixedRecTimer"></span>
+    </div>
+    <audio id="fixedRecPreview" controls style="display:none; width:100%;"></audio>
+    <div id="fixedSaveRow" style="display:none; margin-top:10px;">
+      <input type="text" id="fixedNazivInput" placeholder="Naziv verzije (npr. Pitch v1)" style="margin-bottom:8px;">
       <div class="btn-row">
-        <button class="btn-primary" id="fixedSaveBtn" disabled>Spremi kao fiksni dio</button>
+        <button class="btn-primary" id="fixedSaveNewBtn">Spremi kao novu verziju</button>
+        <button class="btn-secondary" id="fixedRecDiscardBtn">Odbaci</button>
       </div>
     </div>
-    <audio id="fixedPreview" controls style="display:none;"></audio>
-    <div class="btn-row" id="fixedReplaceRow" style="display:none;">
-      <button class="btn-secondary" id="fixedReplaceBtn">Zamijeni fiksni dio</button>
-    </div>
+    <!-- Lista spremljenih verzija -->
+    <div id="fixedVersionList"></div>
   </div>
 
   <!-- STEP 2: LEADS -->
@@ -367,7 +384,11 @@ let accessToken = null;
 let currentUser = null;
 let leads = [];      // [{lead_id, naziv, vlasnik, opis, status, _row}, ...]
 let activeId = null;
-let fixedBlob = null, fixedMime = null;
+let fixedBlob = null, fixedMime = null; // aktivna verzija — sync iz pitches[]
+let pitches = [];       // [{id, naziv, audio:{mime,b64}, datum_spremanja}]
+let activePitchId = null;
+let fixedPendingBlob = null, fixedPendingMime = null; // snimljeno/uploadano, još nije spremljeno
+let fixedRecMR = null, fixedRecChunks = [], fixedRecStream = null, fixedRecInterval = null;
 let greetingBlob = null, finalBlob = null;
 let mediaRecorder = null, mediaChunks = [], micStream = null;
 let recTimerInterval = null, recStartTime = null;
@@ -694,55 +715,191 @@ async function selectLead(id){
   renderLeads();
 }
 
-// ─── FIXED PITCH ───────────────────────────────────────────────────────────
-function setFixedBadge(ok){
+// ─── FIXED PITCH VERSIONS ──────────────────────────────────────────────────
+
+async function pitchesLoad(){
+  const raw = await storeGet('fixed-pitches');
+  if(raw){ try{ return JSON.parse(raw); }catch{} }
+  return null;
+}
+async function pitchesSave(list){ await storeSet('fixed-pitches', JSON.stringify(list)); }
+async function pitchActiveIdGet(){ return (await storeGet('fixed-pitch-active-id')) || null; }
+async function pitchActiveIdSet(id){ await storeSet('fixed-pitch-active-id', id || ''); }
+
+function setFixedBadge(ok, naziv){
   const b = $('fixedBadge');
-  b.textContent = ok ? 'spremljeno' : 'nije postavljen';
-  b.className = 'badge ' + (ok ? 'ok' : 'warn');
-  const hasAuth = !!accessToken;
+  b.textContent = ok && naziv ? 'aktivno: ' + naziv : ok ? 'spremljeno' : 'nije postavljen';
+  b.className = 'badge ' + (ok ? 'ok' : '');
   $('contactsPanel').classList.toggle('step-locked', !ok);
   $('recordPanel').classList.toggle('step-locked', !ok);
 }
 
-$('fixedFile').addEventListener('change', () => {
-  $('fixedSaveBtn').disabled = !$('fixedFile').files.length;
-});
-
-$('fixedSaveBtn').addEventListener('click', async () => {
-  const file = $('fixedFile').files[0];
-  if(!file) return;
-  fixedBlob = file;
-  fixedMime = file.type || 'audio/mpeg';
-  const b64 = await blobToBase64(fixedBlob);
-  await storeSet('fixed-pitch-audio', JSON.stringify({mime:fixedMime, b64}));
-  showFixedPreview();
-});
-
-$('fixedReplaceBtn').addEventListener('click', () => {
-  $('fixedSetup').style.display = 'block';
-  $('fixedReplaceRow').style.display = 'none';
-  $('fixedPreview').style.display = 'none';
-  setFixedBadge(false);
-});
-
-function showFixedPreview(){
-  $('fixedPreview').src = URL.createObjectURL(fixedBlob);
-  $('fixedPreview').style.display = 'block';
-  $('fixedSetup').style.display = 'none';
-  $('fixedReplaceRow').style.display = 'flex';
-  setFixedBadge(true);
+async function syncActivePitchToBlob(){
+  const p = pitches.find(p => p.id === activePitchId);
+  if(p){
+    fixedBlob = base64ToBlob(p.audio.b64, p.audio.mime);
+    fixedMime = p.audio.mime;
+    setFixedBadge(true, p.naziv);
+  } else {
+    fixedBlob = null; fixedMime = null;
+    setFixedBadge(false, null);
+  }
 }
 
-async function loadFixedFromStorage(){
-  const raw = await storeGet('fixed-pitch-audio');
-  if(raw){
-    try{
-      const {mime,b64} = JSON.parse(raw);
-      fixedMime = mime;
-      fixedBlob = base64ToBlob(b64, mime);
-      showFixedPreview();
-    }catch{}
+function renderPitchList(){
+  const list = $('fixedVersionList');
+  list.innerHTML = '';
+  pitches.forEach(p => {
+    const isActive = p.id === activePitchId;
+    const div = document.createElement('div');
+    div.className = 'fixed-version' + (isActive ? ' active' : '');
+    const audioSrc = `data:${p.audio.mime};base64,${p.audio.b64}`;
+    div.innerHTML = `
+      <div class="fixed-version-header">
+        <span class="fixed-version-name">${p.naziv}</span>
+        ${isActive ? '<span class="badge ok" style="font-size:9px;padding:1px 5px;">aktivno</span>' : ''}
+      </div>
+      <audio controls src="${audioSrc}"></audio>
+      <div class="btn-row">
+        ${!isActive
+          ? `<button class="btn-teal fp-activate" data-id="${p.id}" style="font-size:12px;padding:6px 10px;">✓ Koristi ovu</button>`
+          : '<span class="fp-active-label">✓ Aktivna verzija</span>'}
+        <button class="btn-danger fp-delete" data-id="${p.id}" style="font-size:12px;padding:6px 10px;">Obriši</button>
+      </div>`;
+    list.appendChild(div);
+  });
+  list.querySelectorAll('.fp-activate').forEach(btn =>
+    btn.addEventListener('click', () => setActivePitch(btn.dataset.id)));
+  list.querySelectorAll('.fp-delete').forEach(btn =>
+    btn.addEventListener('click', () => confirmDeletePitch(btn.dataset.id)));
+}
+
+async function setActivePitch(id){
+  activePitchId = id;
+  await pitchActiveIdSet(id);
+  await syncActivePitchToBlob();
+  renderPitchList();
+  toast('Aktivna verzija: ' + (pitches.find(p => p.id === id)?.naziv || ''));
+}
+
+async function confirmDeletePitch(id){
+  const p = pitches.find(p => p.id === id);
+  if(!p) return;
+  if(!confirm(`Obrisati verziju "${p.naziv}"?`)) return;
+  pitches = pitches.filter(x => x.id !== id);
+  await pitchesSave(pitches);
+  if(activePitchId === id){
+    activePitchId = pitches[0]?.id || null;
+    await pitchActiveIdSet(activePitchId || '');
   }
+  await syncActivePitchToBlob();
+  renderPitchList();
+  toast(pitches.length ? 'Verzija obrisana.' : 'Sve verzije obrisane.', pitches.length ? 'ok' : 'err');
+}
+
+async function saveNewPitch(blob, mime, naziv){
+  const id = Date.now().toString();
+  const b64 = await blobToBase64(blob);
+  pitches.push({id, naziv, audio:{mime, b64}, datum_spremanja: new Date().toISOString()});
+  await pitchesSave(pitches);
+  if(!activePitchId){ activePitchId = id; await pitchActiveIdSet(id); }
+  await syncActivePitchToBlob();
+  renderPitchList();
+}
+
+function resetPendingFixed(){
+  fixedPendingBlob = null; fixedPendingMime = null;
+  $('fixedRecPreview').style.display = 'none';
+  $('fixedRecPreview').src = '';
+  $('fixedSaveRow').style.display = 'none';
+  $('fixedNazivInput').value = '';
+  $('fixedRecTimer').textContent = '';
+  $('fixedFile').value = '';
+}
+
+// Snimanje novog fiksnog dijela
+$('fixedRecBtn').addEventListener('click', async () => {
+  if(fixedRecMR && fixedRecMR.state === 'recording'){ fixedRecMR.stop(); return; }
+  try{ fixedRecStream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+  catch(e){ alert('Nije moguće pristupiti mikrofonu: ' + e.message); return; }
+  fixedRecChunks = [];
+  fixedRecMR = new MediaRecorder(fixedRecStream);
+  fixedRecMR.ondataavailable = e => { if(e.data.size) fixedRecChunks.push(e.data); };
+  fixedRecMR.onstop = () => {
+    fixedPendingBlob = new Blob(fixedRecChunks, {type: fixedRecMR.mimeType || 'audio/webm'});
+    fixedPendingMime = fixedPendingBlob.type;
+    fixedRecStream.getTracks().forEach(t => t.stop());
+    clearInterval(fixedRecInterval);
+    $('fixedRecBtn').classList.remove('recording');
+    $('fixedRecLabel').textContent = 'Snimi novi';
+    $('fixedRecPreview').src = URL.createObjectURL(fixedPendingBlob);
+    $('fixedRecPreview').style.display = 'block';
+    $('fixedSaveRow').style.display = 'block';
+  };
+  fixedRecMR.start();
+  const t0 = Date.now();
+  fixedRecInterval = setInterval(() => {
+    $('fixedRecTimer').textContent = ((Date.now()-t0)/1000).toFixed(1)+'s';
+  }, 100);
+  $('fixedRecBtn').classList.add('recording');
+  $('fixedRecLabel').textContent = 'Zaustavi';
+});
+
+// Upload fajla
+$('fixedUploadBtn').addEventListener('click', () => $('fixedFile').click());
+$('fixedFile').addEventListener('change', () => {
+  const file = $('fixedFile').files[0];
+  if(!file) return;
+  fixedPendingBlob = file;
+  fixedPendingMime = file.type || 'audio/mpeg';
+  $('fixedRecPreview').src = URL.createObjectURL(fixedPendingBlob);
+  $('fixedRecPreview').style.display = 'block';
+  $('fixedSaveRow').style.display = 'block';
+  if(!$('fixedNazivInput').value)
+    $('fixedNazivInput').value = file.name.replace(/\.[^/.]+$/, '');
+});
+
+// Spremi novu verziju
+$('fixedSaveNewBtn').addEventListener('click', async () => {
+  if(!fixedPendingBlob) return;
+  const naziv = $('fixedNazivInput').value.trim()
+    || ('Pitch ' + new Date().toLocaleDateString('hr-HR'));
+  await saveNewPitch(fixedPendingBlob, fixedPendingMime, naziv);
+  resetPendingFixed();
+  toast('Verzija "' + naziv + '" spremljena');
+});
+
+$('fixedRecDiscardBtn').addEventListener('click', resetPendingFixed);
+
+// Init — učitaj sve verzije iz pohrane
+async function loadPitchesFromStorage(){
+  let list = await pitchesLoad();
+
+  // Migracija: stari format (jedna vrijednost) → novi (lista)
+  if(!list){
+    const oldRaw = await storeGet('fixed-pitch-audio');
+    if(oldRaw){
+      try{
+        const {mime, b64} = JSON.parse(oldRaw);
+        list = [{id:'migrated', naziv:'Pitch (migrirani)', audio:{mime,b64},
+                  datum_spremanja: new Date().toISOString()}];
+        await pitchesSave(list);
+      }catch{}
+    }
+  }
+
+  pitches = list || [];
+  activePitchId = await pitchActiveIdGet();
+
+  // Validiraj: aktivni id mora biti u listi
+  if(activePitchId && !pitches.find(p => p.id === activePitchId))
+    activePitchId = pitches[0]?.id || null;
+  if(pitches.length && !activePitchId)
+    activePitchId = pitches[0].id;
+  if(activePitchId) await pitchActiveIdSet(activePitchId);
+
+  await syncActivePitchToBlob();
+  renderPitchList();
 }
 
 // ─── RECORDING ─────────────────────────────────────────────────────────────
@@ -1137,7 +1294,7 @@ $('tabBtnPipeline').addEventListener('click', () => switchTab('pipeline'));
 // ─── INIT ──────────────────────────────────────────────────────────────────
 (async function init(){
   // Učitaj pitch iz lokalne pohrane
-  await loadFixedFromStorage();
+  await loadPitchesFromStorage();
 
   // Inicijaliziraj Google Sign-In
   // GSI skripta je async — čekaj da se učita
